@@ -76,6 +76,14 @@ def custom_openapi():
         routes=app.routes,
     )
     openapi_schema["openapi"] = "3.0.3"
+
+    # Hapus response 422 & schema error yang bikin Power Platform gagal convert
+    responses = openapi_schema["paths"]["/predict"]["post"]["responses"]
+    responses.pop("422", None)
+    schemas = openapi_schema["components"]["schemas"]
+    schemas.pop("HTTPValidationError", None)
+    schemas.pop("ValidationError", None)
+
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
