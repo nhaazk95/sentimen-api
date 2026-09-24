@@ -1,5 +1,6 @@
 import json, re, joblib, nltk
 from fastapi import FastAPI
+from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords as nltk_stopwords
@@ -65,3 +66,17 @@ def predict(data: ReviewInput):
         "f1_macro_training": F1_MACRO_TRAINING,
         "cv_f1_macro": CV_F1_MACRO
     }
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="Sentimen API",
+        version="1.0.0",
+        routes=app.routes,
+    )
+    openapi_schema["openapi"] = "3.0.3"
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
