@@ -16,7 +16,7 @@ with open('slang_dict.json', encoding='utf-8') as f:
     slang_dict = json.load(f)
 
 stop_words = set(nltk_stopwords.words('indonesian'))
-kata_penting = {'tidak','belum','sangat','kurang','terlalu','sudah','paling','lama'}
+kata_penting = {'tidak','belum','sangat','kurang','terlalu','sudah','paling','lama','sekali'}
 stop_words -= kata_penting
 stemmer = StemmerFactory().create_stemmer()
 
@@ -43,7 +43,15 @@ app = FastAPI()
 class ReviewInput(BaseModel):
     text: str
 
-@app.post("/predict")
+class PredictResponse(BaseModel):
+    sentimen: str
+    accuracy_training: float
+    precision_training: float
+    recall_training: float
+    f1_macro_training: float
+    cv_f1_macro: float
+
+@app.post("/predict", response_model=PredictResponse)
 def predict(data: ReviewInput):
     clean = full_preprocess(data.text)
     X = tfidf.transform([clean])
