@@ -10,22 +10,26 @@ nltk.download('punkt')
 nltk.download('punkt_tab')
 nltk.download('stopwords')
 
-model = joblib.load('svm_model.pkl')
-tfidf = joblib.load('tfidf_vectorizer.pkl')
+# Pipeline utuh (TF-IDF + SVM) — satu file, bukan dua terpisah lagi
+pipeline = joblib.load('svm_pipeline.pkl')
 label_encoder = joblib.load('label_encoder.pkl')
 with open('slang_dict.json', encoding='utf-8') as f:
     slang_dict = json.load(f)
 
 stop_words = set(nltk_stopwords.words('indonesian'))
-kata_penting = {'tidak','belum','sangat','kurang','terlalu','sudah','paling','lama','sekali'}
+# Disinkronkan dengan kata_penting versi training terbaru
+kata_penting = {'tidak', 'belum', 'sangat', 'kurang', 'terlalu', 'sudah',
+                'paling', 'lama', 'sekali', 'layanan', 'dan', 'di', 'oke'}
 stop_words -= kata_penting
 stemmer = StemmerFactory().create_stemmer()
 
-ACCURACY_TRAINING = 0.9778
-PRECISION_TRAINING = 0.9780
-RECALL_TRAINING = 0.9778
-F1_MACRO_TRAINING = 0.9779
-CV_F1_MACRO = 0.8314
+# Angka evaluasi tetap — dari uji manual n=298 (data April, sudah dibersihkan dari overlap training,
+# 1 annotator — lihat catatan keterbatasan metodologi di laporan)
+ACCURACY = 0.9732
+PRECISION_MACRO = 0.9180
+RECALL_MACRO = 0.9573
+F1_MACRO = 0.9365
+CV_F1_MACRO = 0.8866
 
 def full_preprocess(text):
     text = "" if not text else str(text)
@@ -46,24 +50,33 @@ class ReviewInput(BaseModel):
 
 class PredictResponse(BaseModel):
     sentimen: str
-    accuracy_training: float
-    precision_training: float
-    recall_training: float
-    f1_macro_training: float
+    confidence: float
+    accuracy: float
+    precision_macro: float
+    recall_macro: float
+    f1_macro: float
     cv_f1_macro: float
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(data: ReviewInput):
     clean = full_preprocess(data.text)
-    X = tfidf.transform([clean])
-    pred_int = model.predict(X)[0]
+    pred_int = pipeline.predict([clean])[0]
     label = label_encoder.inverse_transform([pred_int])[0]
+
+    # Confidence: jarak titik data ke decision boundary (beda tiap kalimat)
+    svm_step = pipeline.named_steps['svm']
+    tfidf_step = pipeline.named_steps['tfidf']
+    X_vec = tfidf_step.transform([clean])
+    decision_scores = svm_step.decision_function(X_vec)[0]
+    confidence = float(max(decision_scores) - sorted(decision_scores)[-2]) if len(decision_scores) > 1 else float(abs(decision_scores))
+
     return {
         "sentimen": label,
-        "accuracy_training": ACCURACY_TRAINING,
-        "precision_training": PRECISION_TRAINING,
-        "recall_training": RECALL_TRAINING,
-        "f1_macro_training": F1_MACRO_TRAINING,
+        "confidence": round(confidence, 4),
+        "accuracy": ACCURACY,
+        "precision_macro": PRECISION_MACRO,
+        "recall_macro": RECALL_MACRO,
+        "f1_macro": F1_MACRO,
         "cv_f1_macro": CV_F1_MACRO
     }
 
@@ -76,14 +89,11 @@ def custom_openapi():
         routes=app.routes,
     )
     openapi_schema["openapi"] = "3.0.3"
-
-    # Hapus response 422 & schema error yang bikin Power Platform gagal convert
     responses = openapi_schema["paths"]["/predict"]["post"]["responses"]
     responses.pop("422", None)
     schemas = openapi_schema["components"]["schemas"]
     schemas.pop("HTTPValidationError", None)
     schemas.pop("ValidationError", None)
-
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
