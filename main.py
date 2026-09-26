@@ -1,4 +1,5 @@
 import json, re, joblib, nltk
+import numpy as np
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
@@ -67,8 +68,13 @@ def predict(data: ReviewInput):
     svm_step = pipeline.named_steps['svm']
     tfidf_step = pipeline.named_steps['tfidf']
     X_vec = tfidf_step.transform([clean])
-    decision_scores = svm_step.decision_function(X_vec)[0]
-    confidence = float(max(decision_scores) - sorted(decision_scores)[-2]) if len(decision_scores) > 1 else float(abs(decision_scores))
+
+    decision_scores = np.atleast_1d(svm_step.decision_function(X_vec)[0])
+    if decision_scores.size > 1:
+        sorted_scores = np.sort(decision_scores)
+        confidence = float(sorted_scores[-1] - sorted_scores[-2])
+    else:
+        confidence = float(abs(decision_scores[0]))
 
     return {
         "sentimen": label,
