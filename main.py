@@ -19,8 +19,8 @@ with open('slang_dict.json', encoding='utf-8') as f:
 
 stop_words = set(nltk_stopwords.words('indonesian'))
 # Disinkronkan dengan kata_penting versi training terbaru
-kata_penting = {'tidak', 'belum', 'sangat', 'kurang', 'terlalu', 'sudah',
-                'paling', 'lama', 'sekali', 'layanan', 'dan', 'di', 'oke'}
+kata_penting = {'tidak', 'belum', 'sangat', 'kurang', 'terlalu', 'sudah', 'paling', 
+                'lama', 'sekali', 'layanan', 'dan', 'di', 'oke', 'ber', 'ter', 'ada'}
 stop_words -= kata_penting
 stemmer = StemmerFactory().create_stemmer()
 
