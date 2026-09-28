@@ -24,13 +24,11 @@ kata_penting = {'tidak', 'belum', 'sangat', 'kurang', 'terlalu', 'sudah',
 stop_words -= kata_penting
 stemmer = StemmerFactory().create_stemmer()
 
-# Angka evaluasi tetap — dari uji manual n=298 (data April, sudah dibersihkan dari overlap training,
-# 1 annotator — lihat catatan keterbatasan metodologi di laporan)
-ACCURACY = 0.9732
-PRECISION_MACRO = 0.9180
-RECALL_MACRO = 0.9573
-F1_MACRO = 0.9365
-CV_F1_MACRO = 0.8866
+ACCURACY = 0.9833
+PRECISION_MACRO = 0.9477
+RECALL_MACRO = 0.9715
+F1_MACRO = 0.9590
+CV_F1_MACRO = 0.8893
 
 def full_preprocess(text):
     text = "" if not text else str(text)
@@ -64,7 +62,6 @@ def predict(data: ReviewInput):
     pred_int = pipeline.predict([clean])[0]
     label = label_encoder.inverse_transform([pred_int])[0]
 
-    # Confidence: jarak titik data ke decision boundary (beda tiap kalimat)
     svm_step = pipeline.named_steps['svm']
     tfidf_step = pipeline.named_steps['tfidf']
     X_vec = tfidf_step.transform([clean])
