@@ -1,0 +1,51 @@
+name: "01 - Prepare & Auto-Label Data"
+
+on:
+  schedule:
+    - cron: "0 2 1 */3 *"   # tiap 3 bulan, tanggal 1 jam 02:00 UTC. Ubah sesuai kebutuhan.
+  workflow_dispatch: {}     # bisa dipicu manual dari tab Actions
+
+jobs:
+  prepare-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas==2.2.3 transformers torch --extra-index-url https://download.pytorch.org/whl/cpu
+
+      - name: Auto-label data baru
+        run: python scripts/auto_label.py
+
+      - name: Buat branch & commit hasil staging
+        id: branch
+        run: |
+          BRANCH="data-review/$(date +%Y%m%d-%H%M%S)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git config user.name "retrain-bot"
+          git config user.email "retrain-bot@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add data/staging/
+          git commit -m "chore: data baru + auto-label utk spot-check"
+          git push origin "$BRANCH"
+
+      - name: Buka Pull Request untuk review manual
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "Review spot-check label - ${{ steps.branch.outputs.branch }}" \
+            --body "Data baru sudah di-auto-label pakai IndoBERT.
+
+          **Yang perlu dilakukan sebelum merge:**
+          1. Buka \`data/staging/spot_check_sample.csv\`.
+          2. Isi kolom \`reviewed_label\` untuk baris yang labelnya kurang tepat (kosongkan kalau sudah benar).
+          3. Merge PR ini setelah selesai review.
+
+          Setelah di-merge, retrain + evaluasi + deploy akan berjalan **otomatis**." \
+            --base main \
+            --head "${{ steps.branch.outputs.branch }}"

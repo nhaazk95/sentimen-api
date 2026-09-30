@@ -1,0 +1,74 @@
+name: "02 - Retrain, Evaluate & Deploy"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "data/staging/**"   # trigger otomatis begitu PR review di-merge ke main
+
+jobs:
+  retrain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas==2.2.3 scikit-learn==1.6.1 numpy==1.26.4 scipy==1.13.1 joblib==1.4.2 nltk==3.9.1 Sastrawi==1.0.1
+
+      - name: Gabungkan hasil review ke training pool
+        run: python scripts/prepare_dataset.py
+
+      - name: Commit training pool terbaru
+        run: |
+          git config user.name "retrain-bot"
+          git config user.email "retrain-bot@users.noreply.github.com"
+          git add data/training/train_pool.csv data/staging/
+          git commit -m "chore: update train_pool + arsip staging" || echo "Tidak ada perubahan"
+          git push
+
+      - name: Retrain (GridSearchCV) & evaluasi
+        id: eval
+        run: python scripts/train_evaluate.py
+
+      - name: Deploy model baru (kalau lolos evaluasi)
+        if: steps.eval.outputs.should_deploy == 'true'
+        run: |
+          # Timpa file yang dipakai main.py di ROOT repo, bukan folder terpisah,
+          # supaya deploy Anda yang sudah ada (auto-deploy dari push ke main)
+          # otomatis pakai model baru ini.
+          cp data/models/candidate/svm_pipeline.pkl ./svm_pipeline.pkl
+          cp data/models/candidate/label_encoder.pkl ./label_encoder.pkl
+          cp data/models/candidate/metrics.json ./metrics.json
+          git config user.name "retrain-bot"
+          git config user.email "retrain-bot@users.noreply.github.com"
+          git add svm_pipeline.pkl label_encoder.pkl metrics.json
+          git commit -m "deploy: model baru lolos evaluasi
+
+          ${{ steps.eval.outputs.summary }}"
+          git push
+          # TODO: kalau hosting API tidak auto-redeploy dari push ke main
+          # (mis. Azure App Service/Render tanpa CD), tambahkan trigger manual
+          # di sini, misalnya: curl -X POST "$DEPLOY_WEBHOOK_URL"
+
+      - name: Buka Issue kalau performa turun (tidak deploy)
+        if: steps.eval.outputs.should_deploy == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "Retrain gagal lolos evaluasi - $(date +%Y-%m-%d)" \
+            --body "Model kandidat performanya turun dibanding model lama, TIDAK di-deploy.
+
+          \`\`\`
+          ${{ steps.eval.outputs.summary }}
+          \`\`\`
+
+          Perlu investigasi manual sebelum retrain berikutnya."
+
+      - name: Gagalkan job kalau tidak deploy (biar kelihatan merah di Actions)
+        if: steps.eval.outputs.should_deploy == 'false'
+        run: exit 1
