@@ -9,6 +9,7 @@ Output: data/staging/auto_labeled.csv        (semua baris + label + confidence)
 """
 import glob
 import os
+import re
 
 import pandas as pd
 from transformers import pipeline
@@ -18,10 +19,20 @@ from transformers import pipeline
 MODEL_NAME = "mdhugol/indonesia-bert-sentiment-classification"
 SAMPLE_FRACTION = 0.15          # 15% data disampling utk spot-check
 MIN_SAMPLE = 20                 # minimal jumlah baris disampling
+MIN_TEXT_LENGTH = 3             # buang ulasan lebih pendek dari ini (karakter)
 INCOMING_DIR = "data/incoming"
 STAGING_DIR = "data/staging"
 LABEL_MAP = {"LABEL_0": "Negatif", "LABEL_1": "Netral", "LABEL_2": "Positif"}
 # -------------------------------------------------------------------------
+
+
+def clean_light(text: str) -> str:
+    """Normalisasi ringan saja — TIDAK lowercase/stemming (itu tugas
+    full_preprocess() di scripts/train_evaluate.py), supaya teks yang
+    dikirim ke IndoBERT tetap natural dan akurat dibaca modelnya."""
+    text = re.sub(r"(.)\1{3,}", r"\1\1\1", text)  # "bagusssssss" -> "baguuus"
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 def load_incoming() -> pd.DataFrame:
@@ -30,8 +41,9 @@ def load_incoming() -> pd.DataFrame:
         raise FileNotFoundError(f"Tidak ada file baru di {INCOMING_DIR}/")
     dfs = [pd.read_csv(f) for f in files]
     df = pd.concat(dfs, ignore_index=True).dropna(subset=["text"])
-    df["text"] = df["text"].astype(str).str.strip()
-    df = df[df["text"] != ""].drop_duplicates(subset=["text"])
+    df["text"] = df["text"].astype(str).str.strip().apply(clean_light)
+    df = df[(df["text"] != "") & (df["text"].str.len() >= MIN_TEXT_LENGTH)]
+    df = df.drop_duplicates(subset=["text"])
     return df.reset_index(drop=True)
 
 
