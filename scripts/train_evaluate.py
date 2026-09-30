@@ -25,7 +25,10 @@ from preprocessing import full_preprocess, load_slang_dict
 TRAINING_DIR = "data/training"
 CANDIDATE_DIR = "data/models/candidate"
 BASELINE_METRICS_PATH = "metrics.json"  # metrics model yang SEDANG live di root repo
-TOLERANCE = 0.005  # kandidat boleh sedikit lebih rendah (0.5%) dan tetap lolos
+F1_TOLERANCE = 0.005        # f1_macro: metrik utama, toleransi ketat (0.5%)
+ACCURACY_TOLERANCE = 0.03   # accuracy: cuma sanity-check, toleransi longgar (3%) -
+                             # karena akurasi gampang bias ke kelas mayoritas (Positif)
+                             # pada data yang timpang, jadi bukan patokan utama di sini.
 
 # Nama step HARUS "tfidf" dan "svm" - main.py mengakses lewat
 # pipeline.named_steps['svm'] dan pipeline.named_steps['tfidf']
@@ -90,13 +93,29 @@ def main():
     print("[train_evaluate] Classification report per kelas:")
     print(classification_report(y_test, y_pred, target_names=labels_order))
 
+    # Simpan perbandingan baris-per-baris: teks asli, label (manual/rating),
+    # vs prediksi model kandidat - buat lihat contoh konkret yang salah.
+    y_test_label = label_encoder.inverse_transform(y_test)
+    y_pred_label = label_encoder.inverse_transform(y_pred)
+    comparison = pd.DataFrame({
+        "text": test_set["text"],
+        "label_asli": y_test_label,
+        "prediksi_model": y_pred_label,
+        "cocok": y_test_label == y_pred_label,
+    })
+    comparison_path = os.path.join(CANDIDATE_DIR, "eval_predictions.csv")
+    comparison.to_csv(comparison_path, index=False)
+    print(f"[train_evaluate] Perbandingan per baris disimpan -> {comparison_path}")
+
     baseline = load_baseline_metrics()
     print(f"[train_evaluate] Baseline (live sekarang): {baseline}")
     print(f"[train_evaluate] Kandidat                : {new_metrics}")
 
+    # f1_macro adalah syarat UTAMA (lebih relevan utk data timpang kayak ini).
+    # accuracy cuma sanity-check longgar, bukan penentu utama.
     should_deploy = (
-        new_metrics["f1_macro"] >= baseline.get("f1_macro", 0) - TOLERANCE
-        and new_metrics["accuracy"] >= baseline.get("accuracy", 0) - TOLERANCE
+        new_metrics["f1_macro"] >= baseline.get("f1_macro", 0) - F1_TOLERANCE
+        and new_metrics["accuracy"] >= baseline.get("accuracy", 0) - ACCURACY_TOLERANCE
     )
 
     os.makedirs(CANDIDATE_DIR, exist_ok=True)

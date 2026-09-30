@@ -35,6 +35,12 @@ jobs:
         id: eval
         run: python scripts/train_evaluate.py
 
+      - name: Upload perbandingan label vs prediksi (buat dicek manual)
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-predictions
+          path: data/models/candidate/eval_predictions.csv
+
       - name: Deploy model baru (kalau lolos evaluasi)
         if: steps.eval.outputs.should_deploy == 'true'
         run: |
