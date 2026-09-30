@@ -1,51 +1,39 @@
-import json, re, joblib, nltk
+import json
+import joblib
 import numpy as np
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
-from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords as nltk_stopwords
-from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 
-nltk.download('punkt')
-nltk.download('punkt_tab')
-nltk.download('stopwords')
+from preprocessing import full_preprocess, load_slang_dict  # <- diambil dari modul bersama
 
-# Pipeline utuh (TF-IDF + SVM) — satu file, bukan dua terpisah lagi
+# Pipeline utuh (TF-IDF + SVM) — satu file
 pipeline = joblib.load('svm_pipeline.pkl')
 label_encoder = joblib.load('label_encoder.pkl')
-with open('slang_dict.json', encoding='utf-8') as f:
-    slang_dict = json.load(f)
+slang_dict = load_slang_dict('slang_dict.json')
 
-stop_words = set(nltk_stopwords.words('indonesian'))
-# Disinkronkan dengan kata_penting versi training terbaru
-kata_penting = {'tidak', 'belum', 'sangat', 'kurang', 'terlalu', 'sudah', 'paling', 
-                'lama', 'sekali', 'layanan', 'dan', 'di', 'oke', 'ber', 'ter', 'ada'}
-stop_words -= kata_penting
-stemmer = StemmerFactory().create_stemmer()
+# Metrics sekarang dibaca dari file, bukan hardcoded, supaya otomatis
+# ter-update tiap kali pipeline retraining deploy model baru.
+with open('metrics.json', encoding='utf-8') as f:
+    _metrics = json.load(f)
 
-ACCURACY = 0.9833
-PRECISION_MACRO = 0.9477
-RECALL_MACRO = 0.9715
-F1_MACRO = 0.9590
-CV_F1_MACRO = 0.8893
+ACCURACY = _metrics['accuracy']
+PRECISION_MACRO = _metrics['precision_macro']
+RECALL_MACRO = _metrics['recall_macro']
+F1_MACRO = _metrics['f1_macro']
+CV_F1_MACRO = _metrics['cv_f1_macro']
 
-def full_preprocess(text):
-    text = "" if not text else str(text)
-    text = text.lower()
-    text = re.sub(r'(.)\1{2,}', r'\1', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    text = ' '.join(slang_dict.get(w, w) for w in text.split())
-    tokens = word_tokenize(text)
-    tokens = [w for w in tokens if w not in stop_words]
-    tokens = [stemmer.stem(w) for w in tokens]
-    return ' '.join(tokens)
+
+def preprocess(text):
+    return full_preprocess(text, slang_dict)
+
 
 app = FastAPI()
 
+
 class ReviewInput(BaseModel):
     text: str
+
 
 class PredictResponse(BaseModel):
     sentimen: str
@@ -56,9 +44,10 @@ class PredictResponse(BaseModel):
     f1_macro: float
     cv_f1_macro: float
 
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(data: ReviewInput):
-    clean = full_preprocess(data.text)
+    clean = preprocess(data.text)
     pred_int = pipeline.predict([clean])[0]
     label = label_encoder.inverse_transform([pred_int])[0]
 
@@ -83,6 +72,7 @@ def predict(data: ReviewInput):
         "cv_f1_macro": CV_F1_MACRO
     }
 
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -99,5 +89,6 @@ def custom_openapi():
     schemas.pop("ValidationError", None)
     app.openapi_schema = openapi_schema
     return app.openapi_schema
+
 
 app.openapi = custom_openapi
