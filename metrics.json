@@ -1,8 +1,8 @@
 {
-  "accuracy": 0.962,
-  "precision_macro": 0.9655,
-  "recall_macro": 0.9536,
-  "f1_macro": 0.9593,
+  "accuracy": 0.992,
+  "precision_macro": 0.9895,
+  "recall_macro": 0.9931,
+  "f1_macro": 0.9913,
   "cv_f1_macro": 0.7271,
   "best_params": {
     "svm__C": 10,
