@@ -26,7 +26,7 @@ MIN_SAMPLE = 20
 MIN_TEXT_LENGTH = 3
 INCOMING_DIR = "data/incoming"
 STAGING_DIR = "data/staging"
-LABEL_MAP = {"LABEL_0": "Negatif", "LABEL_1": "Netral", "LABEL_2": "Positif"}
+LABEL_MAP = {"LABEL_0": "Positif", "LABEL_1": "Netral", "LABEL_2": "Negatif"}
 # -------------------------------------------------------------------------
 
 

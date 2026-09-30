@@ -1,0 +1,20 @@
+name: "03 - Diagnostik: Evaluasi Model Live"
+
+on:
+  workflow_dispatch: {}   # jalanin manual dari tab Actions kapan aja
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas==2.2.3 scikit-learn==1.6.1 numpy==1.26.4 scipy==1.13.1 joblib==1.4.2 nltk==3.9.1 Sastrawi==1.0.1
+
+      - name: Evaluasi model yang sekarang live
+        run: python scripts/evaluate_current_model.py
