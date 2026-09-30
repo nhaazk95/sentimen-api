@@ -47,6 +47,21 @@ def load_incoming() -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def flag_rating_mismatch(row) -> bool:
+    """Rating bintang dipakai sebagai cross-check, BUKAN sebagai label utama
+    (banyak ulasan yang teksnya netral/positif tapi bintangnya rendah karena
+    alasan lain, atau sebaliknya) — tapi kalau selisihnya ekstrem, itu sinyal
+    kuat auto-label IndoBERT kemungkinan salah, jadi wajib direview manual."""
+    if "Rating" not in row or pd.isna(row["Rating"]):
+        return False
+    rating = row["Rating"]
+    if rating <= 2 and row["label"] == "Positif":
+        return True
+    if rating >= 4 and row["label"] == "Negatif":
+        return True
+    return False
+
+
 def main():
     df = load_incoming()
     print(f"[auto_label] {len(df)} ulasan baru ditemukan.")
@@ -62,14 +77,33 @@ def main():
     df.to_csv(labeled_path, index=False)
     print(f"[auto_label] Disimpan -> {labeled_path}")
 
-    # Sampling stratified per label untuk spot-check
+    # Tandai baris yang rating bintangnya kontradiksi sama hasil auto-label
+    # (mis. rating 1 tapi label Positif) - ini prioritas tinggi utk direview,
+    # kemungkinan besar auto-label-nya salah.
+    df["rating_mismatch"] = df.apply(flag_rating_mismatch, axis=1)
+    n_mismatch = df["rating_mismatch"].sum()
+    print(f"[auto_label] {n_mismatch} baris rating vs label kontradiksi (wajib direview).")
+
+    # Sampling: SEMUA baris mismatch masuk otomatis, sisanya diisi stratified
+    # random sample per label sampai total mencapai target sample.
     n_sample = max(MIN_SAMPLE, int(len(df) * SAMPLE_FRACTION))
     n_sample = min(n_sample, len(df))
-    sample = (
-        df.groupby("label", group_keys=False)
-        .apply(lambda g: g.sample(frac=min(1, n_sample / len(df)), random_state=42))
-        .reset_index(drop=True)
-    )
+
+    mismatch_rows = df[df["rating_mismatch"]]
+    remaining_needed = max(0, n_sample - len(mismatch_rows))
+    rest_pool = df[~df["rating_mismatch"]]
+
+    if remaining_needed > 0 and len(rest_pool) > 0:
+        frac = min(1, remaining_needed / len(rest_pool))
+        random_sample = (
+            rest_pool.groupby("label", group_keys=False)
+            .apply(lambda g: g.sample(frac=frac, random_state=42))
+        )
+    else:
+        random_sample = rest_pool.iloc[0:0]
+
+    sample = pd.concat([mismatch_rows, random_sample]).drop_duplicates(subset=["text"])
+    sample = sample.reset_index(drop=True)
     sample["reviewed_label"] = ""  # kolom ini diisi manual saat review PR
 
     sample_path = os.path.join(STAGING_DIR, "spot_check_sample.csv")
