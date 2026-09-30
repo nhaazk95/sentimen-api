@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "data/staging/**"   # trigger otomatis begitu PR review di-merge ke main
+      - "data/staging/spot_check_sample.csv"   # trigger otomatis begitu PR review di-merge ke main
 
 jobs:
   retrain:
