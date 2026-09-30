@@ -33,6 +33,7 @@ PARAM_GRID = {
     "svm__C": [0.1, 1, 10, 100],
     "svm__gamma": ["scale", 0.01, 0.1, 1],
     "svm__kernel": ["rbf", "linear"],
+    "svm__class_weight": [None, "balanced"],  # penting krn data timpang (~82% Positif)
 }
 
 
@@ -78,6 +79,16 @@ def main():
         "best_params": grid.best_params_,
         "n_train": len(train_pool),
     }
+
+    # Confusion matrix + per-kelas breakdown, supaya kalau gagal lolos evaluasi,
+    # kelihatan kelas mana yang jadi biang keroknya (biasanya Negatif/Netral).
+    from sklearn.metrics import classification_report, confusion_matrix
+    labels_order = label_encoder.classes_
+    print("[train_evaluate] Confusion matrix (baris=aktual, kolom=prediksi):")
+    cm = confusion_matrix(y_test, y_pred)
+    print(pd.DataFrame(cm, index=labels_order, columns=labels_order))
+    print("[train_evaluate] Classification report per kelas:")
+    print(classification_report(y_test, y_pred, target_names=labels_order))
 
     baseline = load_baseline_metrics()
     print(f"[train_evaluate] Baseline (live sekarang): {baseline}")
