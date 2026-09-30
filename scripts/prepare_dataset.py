@@ -27,7 +27,9 @@ def main():
     pool_path = os.path.join(TRAINING_DIR, "train_pool.csv")
 
     if not os.path.exists(labeled_path):
-        raise FileNotFoundError("auto_labeled.csv tidak ditemukan di data/staging/")
+        print("[prepare_dataset] Tidak ada data baru di staging (auto_labeled.csv "
+              "tidak ditemukan) - lanjut retrain pakai train_pool.csv yang sudah ada.")
+        return
 
     labeled = pd.read_csv(labeled_path)
 

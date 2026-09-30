@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "data/staging/spot_check_sample.csv"   # trigger otomatis begitu PR review di-merge ke main
+  workflow_dispatch: {}   # bisa dipicu manual dari tab Actions, tanpa nunggu PR
 
 jobs:
   retrain:
