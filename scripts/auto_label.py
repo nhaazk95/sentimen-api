@@ -1,11 +1,16 @@
 """
-Auto-label ulasan baru pakai IndoBERT sentiment classifier, lalu sampling
-sebagian untuk spot-check manual.
+Labeling ulasan baru: LABEL UTAMA diambil dari Rating bintang (ground truth),
+BUKAN dari prediksi IndoBERT. IndoBERT di sini cuma dipakai sebagai
+cross-check/QA — kalau prediksinya beda sama label dari rating, baris itu
+paling perlu direview manual (kemungkinan rating-nya nggak nyambung sama
+teksnya, atau teksnya ambigu/sarkas).
 
-Input : data/incoming/*.csv   -> wajib punya kolom "text"
-Output: data/staging/auto_labeled.csv        (semua baris + label + confidence)
-        data/staging/spot_check_sample.csv   (sample utk direview manual,
-                                               kolom "reviewed_label" dikosongkan)
+Input : data/incoming/*.csv   -> wajib punya kolom "text" dan "Rating" (1-5)
+Output: data/staging/auto_labeled.csv        (semua baris + label + qc IndoBERT)
+        data/staging/spot_check_sample.csv   (baris yang IndoBERT-nya beda
+                                               sama label rating, + sample
+                                               tambahan, kolom "reviewed_label"
+                                               dikosongkan utk direview manual)
 """
 import glob
 import os
@@ -15,11 +20,10 @@ import pandas as pd
 from transformers import pipeline
 
 # --- KONFIGURASI --------------------------------------------------------
-# Ganti sesuai model IndoBERT sentiment yang kamu pakai di training awal.
 MODEL_NAME = "mdhugol/indonesia-bert-sentiment-classification"
-SAMPLE_FRACTION = 0.15          # 15% data disampling utk spot-check
-MIN_SAMPLE = 20                 # minimal jumlah baris disampling
-MIN_TEXT_LENGTH = 3             # buang ulasan lebih pendek dari ini (karakter)
+SAMPLE_FRACTION = 0.10           # tambahan random sample (di luar mismatch) utk spot-check
+MIN_SAMPLE = 20
+MIN_TEXT_LENGTH = 3
 INCOMING_DIR = "data/incoming"
 STAGING_DIR = "data/staging"
 LABEL_MAP = {"LABEL_0": "Negatif", "LABEL_1": "Netral", "LABEL_2": "Positif"}
@@ -28,11 +32,19 @@ LABEL_MAP = {"LABEL_0": "Negatif", "LABEL_1": "Netral", "LABEL_2": "Positif"}
 
 def clean_light(text: str) -> str:
     """Normalisasi ringan saja — TIDAK lowercase/stemming (itu tugas
-    full_preprocess() di scripts/train_evaluate.py), supaya teks yang
-    dikirim ke IndoBERT tetap natural dan akurat dibaca modelnya."""
-    text = re.sub(r"(.)\1{3,}", r"\1\1\1", text)  # "bagusssssss" -> "baguuus"
+    full_preprocess() di scripts/train_evaluate.py)."""
+    text = re.sub(r"(.)\1{3,}", r"\1\1\1", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+
+def rating_to_label(rating) -> str:
+    if rating <= 2:
+        return "Negatif"
+    elif rating == 3:
+        return "Netral"
+    else:
+        return "Positif"
 
 
 def load_incoming() -> pd.DataFrame:
@@ -41,60 +53,56 @@ def load_incoming() -> pd.DataFrame:
         raise FileNotFoundError(f"Tidak ada file baru di {INCOMING_DIR}/")
     dfs = [pd.read_csv(f) for f in files]
     df = pd.concat(dfs, ignore_index=True).dropna(subset=["text"])
+
+    if "Rating" not in df.columns:
+        raise ValueError(
+            "Kolom 'Rating' tidak ditemukan di data/incoming/. "
+            "Label dibuat dari rating bintang, jadi kolom ini wajib ada."
+        )
+
     df["text"] = df["text"].astype(str).str.strip().apply(clean_light)
     df = df[(df["text"] != "") & (df["text"].str.len() >= MIN_TEXT_LENGTH)]
+    df = df.dropna(subset=["Rating"])
     df = df.drop_duplicates(subset=["text"])
     return df.reset_index(drop=True)
 
 
-def flag_rating_mismatch(row) -> bool:
-    """Rating bintang dipakai sebagai cross-check, BUKAN sebagai label utama
-    (banyak ulasan yang teksnya netral/positif tapi bintangnya rendah karena
-    alasan lain, atau sebaliknya) — tapi kalau selisihnya ekstrem, itu sinyal
-    kuat auto-label IndoBERT kemungkinan salah, jadi wajib direview manual."""
-    if "Rating" not in row or pd.isna(row["Rating"]):
-        return False
-    rating = row["Rating"]
-    if rating <= 2 and row["label"] == "Positif":
-        return True
-    if rating >= 4 and row["label"] == "Negatif":
-        return True
-    return False
-
-
 def main():
     df = load_incoming()
-    print(f"[auto_label] {len(df)} ulasan baru ditemukan.")
+    print(f"[auto_label] {len(df)} ulasan baru (siap diberi label dari rating).")
 
+    # --- Label utama: dari rating bintang (ground truth) ------------------
+    df["label"] = df["Rating"].apply(rating_to_label)
+    print("[auto_label] Distribusi label (dari rating):")
+    print(df["label"].value_counts())
+
+    # --- IndoBERT sebagai QA/cross-check, bukan penentu label -------------
+    print("[auto_label] Menjalankan IndoBERT untuk cross-check...")
     clf = pipeline("text-classification", model=MODEL_NAME, truncation=True)
-    results = clf(df["text"].tolist())
+    results = clf(df["text"].tolist(), batch_size=16)
 
-    df["label"] = [LABEL_MAP.get(r["label"], r["label"]) for r in results]
-    df["confidence"] = [round(r["score"], 4) for r in results]
+    df["indobert_pred"] = [LABEL_MAP.get(r["label"], r["label"]) for r in results]
+    df["indobert_score"] = [round(r["score"], 4) for r in results]
+    df["mismatch"] = df["label"] != df["indobert_pred"]
+
+    n_mismatch = int(df["mismatch"].sum())
+    print(f"[auto_label] {n_mismatch}/{len(df)} baris beda antara label rating vs prediksi IndoBERT.")
 
     os.makedirs(STAGING_DIR, exist_ok=True)
     labeled_path = os.path.join(STAGING_DIR, "auto_labeled.csv")
     df.to_csv(labeled_path, index=False)
     print(f"[auto_label] Disimpan -> {labeled_path}")
 
-    # Tandai baris yang rating bintangnya kontradiksi sama hasil auto-label
-    # (mis. rating 1 tapi label Positif) - ini prioritas tinggi utk direview,
-    # kemungkinan besar auto-label-nya salah.
-    df["rating_mismatch"] = df.apply(flag_rating_mismatch, axis=1)
-    n_mismatch = df["rating_mismatch"].sum()
-    print(f"[auto_label] {n_mismatch} baris rating vs label kontradiksi (wajib direview).")
-
-    # Sampling: SEMUA baris mismatch masuk otomatis, sisanya diisi stratified
-    # random sample per label sampai total mencapai target sample.
+    # --- Sampling utk spot-check: SEMUA mismatch + sedikit random sample --
     n_sample = max(MIN_SAMPLE, int(len(df) * SAMPLE_FRACTION))
     n_sample = min(n_sample, len(df))
 
-    mismatch_rows = df[df["rating_mismatch"]]
-    remaining_needed = max(0, n_sample - len(mismatch_rows))
-    rest_pool = df[~df["rating_mismatch"]]
+    mismatch_rows = df[df["mismatch"]]
+    remaining = max(0, n_sample - len(mismatch_rows))
+    rest_pool = df[~df["mismatch"]]
 
-    if remaining_needed > 0 and len(rest_pool) > 0:
-        frac = min(1, remaining_needed / len(rest_pool))
+    if remaining > 0 and len(rest_pool) > 0:
+        frac = min(1, remaining / len(rest_pool))
         random_sample = (
             rest_pool.groupby("label", group_keys=False)
             .apply(lambda g: g.sample(frac=frac, random_state=42))
@@ -104,11 +112,12 @@ def main():
 
     sample = pd.concat([mismatch_rows, random_sample]).drop_duplicates(subset=["text"])
     sample = sample.reset_index(drop=True)
-    sample["reviewed_label"] = ""  # kolom ini diisi manual saat review PR
+    sample["reviewed_label"] = ""  # diisi manual: kosongkan kalau label rating-nya sudah benar
 
     sample_path = os.path.join(STAGING_DIR, "spot_check_sample.csv")
     sample.to_csv(sample_path, index=False)
-    print(f"[auto_label] {len(sample)} baris disampling -> {sample_path}")
+    print(f"[auto_label] {len(sample)} baris disampling utk spot-check "
+          f"({len(mismatch_rows)} mismatch + {len(sample) - len(mismatch_rows)} random) -> {sample_path}")
 
 
 if __name__ == "__main__":
