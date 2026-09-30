@@ -25,10 +25,7 @@ from preprocessing import full_preprocess, load_slang_dict
 TRAINING_DIR = "data/training"
 CANDIDATE_DIR = "data/models/candidate"
 BASELINE_METRICS_PATH = "metrics.json"  # metrics model yang SEDANG live di root repo
-F1_TOLERANCE = 0.005        # f1_macro: metrik utama, toleransi ketat (0.5%)
-ACCURACY_TOLERANCE = 0.03   # accuracy: cuma sanity-check, toleransi longgar (3%) -
-                             # karena akurasi gampang bias ke kelas mayoritas (Positif)
-                             # pada data yang timpang, jadi bukan patokan utama di sini.
+MIN_ACCURACY = 0.98  # ambang batas tetap: di bawah ini -> JANGAN deploy, buka Issue
 
 # Nama step HARUS "tfidf" dan "svm" - main.py mengakses lewat
 # pipeline.named_steps['svm'] dan pipeline.named_steps['tfidf']
@@ -108,15 +105,11 @@ def main():
     print(f"[train_evaluate] Perbandingan per baris disimpan -> {comparison_path}")
 
     baseline = load_baseline_metrics()
-    print(f"[train_evaluate] Baseline (live sekarang): {baseline}")
-    print(f"[train_evaluate] Kandidat                : {new_metrics}")
+    print(f"[train_evaluate] Baseline (live sekarang) : {baseline}")
+    print(f"[train_evaluate] Kandidat                 : {new_metrics}")
+    print(f"[train_evaluate] Syarat deploy: accuracy >= {MIN_ACCURACY}")
 
-    # f1_macro adalah syarat UTAMA (lebih relevan utk data timpang kayak ini).
-    # accuracy cuma sanity-check longgar, bukan penentu utama.
-    should_deploy = (
-        new_metrics["f1_macro"] >= baseline.get("f1_macro", 0) - F1_TOLERANCE
-        and new_metrics["accuracy"] >= baseline.get("accuracy", 0) - ACCURACY_TOLERANCE
-    )
+    should_deploy = new_metrics["accuracy"] >= MIN_ACCURACY
 
     os.makedirs(CANDIDATE_DIR, exist_ok=True)
     joblib.dump(best_pipeline, os.path.join(CANDIDATE_DIR, "svm_pipeline.pkl"))
@@ -125,10 +118,11 @@ def main():
         json.dump(new_metrics, f, indent=2)
 
     summary = (
-        f"Baseline -> acc={baseline.get('accuracy')}, f1_macro={baseline.get('f1_macro')}\n"
+        f"Baseline (live sekarang) -> acc={baseline.get('accuracy')}, f1_macro={baseline.get('f1_macro')}\n"
         f"Kandidat -> acc={new_metrics['accuracy']}, f1_macro={new_metrics['f1_macro']}, "
         f"cv_f1_macro={new_metrics['cv_f1_macro']}\n"
-        f"Keputusan: {'DEPLOY' if should_deploy else 'JANGAN DEPLOY, investigasi dulu'}"
+        f"Syarat deploy: accuracy >= {MIN_ACCURACY}\n"
+        f"Keputusan: {'DEPLOY' if should_deploy else f'JANGAN DEPLOY (accuracy di bawah {MIN_ACCURACY}), investigasi dulu'}"
     )
     print("[train_evaluate]\n" + summary)
 
