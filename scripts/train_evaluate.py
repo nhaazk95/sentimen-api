@@ -27,12 +27,6 @@ CANDIDATE_DIR = "data/models/candidate"
 BASELINE_METRICS_PATH = "metrics.json"  # metrics model yang SEDANG live di root repo
 MIN_ACCURACY = 0.98  # ambang batas tetap: di bawah ini -> JANGAN deploy, buka Issue
 
-# Undersampling moderat kelas mayoritas (Positif), BUKAN disamain rata (itu
-# bakal buang terlalu banyak data). Kelas mayoritas dibatasi maks N kali
-# lipat dari kelas minoritas terkecil. Set UNDERSAMPLE=False buat matiin.
-UNDERSAMPLE = True
-MAX_RATIO_TO_MINORITY = 5
-
 # Nama step HARUS "tfidf" dan "svm" - main.py mengakses lewat
 # pipeline.named_steps['svm'] dan pipeline.named_steps['tfidf']
 PARAM_GRID = {
@@ -72,20 +66,6 @@ def main():
     if len(train_pool) != before_train or len(test_set) != before_test:
         print(f"[train_evaluate] PERINGATAN: dibuang {before_train - len(train_pool)} baris invalid "
               f"dari train_pool, {before_test - len(test_set)} dari test_set (label di luar 3 kategori valid).")
-
-    if UNDERSAMPLE:
-        counts = train_pool["label"].value_counts()
-        min_count = counts.min()
-        cap = min_count * MAX_RATIO_TO_MINORITY
-        print(f"[train_evaluate] Undersampling: tiap kelas dibatasi maks {cap} baris "
-              f"({MAX_RATIO_TO_MINORITY}x dari kelas minoritas terkecil={min_count}). Sebelum: {dict(counts)}")
-        parts = []
-        for lbl, group in train_pool.groupby("label"):
-            if len(group) > cap:
-                group = group.sample(n=cap, random_state=42)
-            parts.append(group)
-        train_pool = pd.concat(parts, ignore_index=True)
-        print(f"[train_evaluate] Sesudah undersampling: {dict(train_pool['label'].value_counts())}")
 
     # Pakai "text_processed" kalau udah ada (diproses dari Workflow 1), biar
     # gak diproses dua kali. Baris lama yang belum punya kolom ini (sebelum
