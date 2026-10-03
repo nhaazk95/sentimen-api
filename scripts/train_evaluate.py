@@ -50,6 +50,23 @@ def main():
     train_pool = pd.read_csv(os.path.join(TRAINING_DIR, "train_pool.csv"))
     test_set = pd.read_csv(os.path.join(TRAINING_DIR, "test_set.csv"))
 
+    # --- DEBUG: pastiin cuma ada 3 label yang valid ---------------------
+    print(f"[train_evaluate] Label unik di train_pool.csv: {train_pool['label'].unique().tolist()}")
+    print(f"[train_evaluate] Label unik di test_set.csv  : {test_set['label'].unique().tolist()}")
+    print(f"[train_evaluate] Jumlah baris train_pool: {len(train_pool)}, NaN label: {train_pool['label'].isna().sum()}")
+    print(f"[train_evaluate] Jumlah baris test_set  : {len(test_set)}, NaN label: {test_set['label'].isna().sum()}")
+    # ----------------------------------------------------------------------
+
+    # Buang baris dengan label kosong/NaN atau di luar 3 kategori valid,
+    # SEBELUM preprocessing teks, supaya X dan y tetap sinkron panjangnya.
+    VALID_LABELS = {"Positif", "Netral", "Negatif"}
+    before_train, before_test = len(train_pool), len(test_set)
+    train_pool = train_pool[train_pool["label"].isin(VALID_LABELS)].reset_index(drop=True)
+    test_set = test_set[test_set["label"].isin(VALID_LABELS)].reset_index(drop=True)
+    if len(train_pool) != before_train or len(test_set) != before_test:
+        print(f"[train_evaluate] PERINGATAN: dibuang {before_train - len(train_pool)} baris invalid "
+              f"dari train_pool, {before_test - len(test_set)} dari test_set (label di luar 3 kategori valid).")
+
     print("[train_evaluate] Preprocessing (slang normalize + stemming)...")
     X_train = train_pool["text"].apply(lambda t: full_preprocess(t, slang_dict))
     X_test = test_set["text"].apply(lambda t: full_preprocess(t, slang_dict))
