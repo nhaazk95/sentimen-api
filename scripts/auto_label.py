@@ -38,6 +38,25 @@ def clean_light(text: str) -> str:
     return text
 
 
+def normalize_for_dedup(text: str) -> str:
+    """Versi disederhanakan cuma buat BANDINGIN kemiripan antar baris (dedup
+    near-duplicate) - bukan versi yang dipakai buat label/training."""
+    t = text.lower()
+    t = re.sub(r"[^a-z0-9\s]", "", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+# Pola ulasan yang kelihatan template/copy-paste (nyebut rating bintang di
+# dalam teksnya sendiri - organik biasanya nggak nulis gini, karena rating
+# bintang itu field terpisah di Google Maps, bukan bagian dari teks ulasan).
+TEMPLATE_PATTERN = re.compile(r"rating\s*:\s*[⭐★]+\s*\(\d/5\)", re.IGNORECASE)
+
+
+def is_template_text(text: str) -> bool:
+    return bool(TEMPLATE_PATTERN.search(text))
+
+
 def rating_to_label(rating) -> str:
     if rating <= 2:
         return "Negatif"
@@ -63,7 +82,19 @@ def load_incoming() -> pd.DataFrame:
     df["text"] = df["text"].astype(str).str.strip().apply(clean_light)
     df = df[(df["text"] != "") & (df["text"].str.len() >= MIN_TEXT_LENGTH)]
     df = df.dropna(subset=["Rating"])
-    df = df.drop_duplicates(subset=["text"])
+
+    # 1) Buang teks yang kelihatan template/copy-paste (bukan ulasan organik)
+    before = len(df)
+    df = df[~df["text"].apply(is_template_text)]
+    print(f"[auto_label] Dibuang {before - len(df)} baris terdeteksi template/spam.")
+
+    # 2) Dedup near-duplicate (bukan cuma exact match) - tangkep ulasan yang
+    #    sama persis isinya tapi beda dikit di tanda baca/emoji/kapitalisasi
+    before = len(df)
+    df["_norm"] = df["text"].apply(normalize_for_dedup)
+    df = df.drop_duplicates(subset=["_norm"]).drop(columns=["_norm"])
+    print(f"[auto_label] Dibuang {before - len(df)} baris near-duplicate.")
+
     return df.reset_index(drop=True)
 
 
