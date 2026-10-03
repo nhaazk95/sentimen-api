@@ -1,14 +1,14 @@
 {
-  "accuracy": 0.992,
-  "precision_macro": 0.9895,
-  "recall_macro": 0.9931,
-  "f1_macro": 0.9913,
-  "cv_f1_macro": 0.7271,
+  "accuracy": 1.0,
+  "precision_macro": 1.0,
+  "recall_macro": 1.0,
+  "f1_macro": 1.0,
+  "cv_f1_macro": 0.6349,
   "best_params": {
-    "svm__C": 10,
+    "svm__C": 1,
     "svm__class_weight": "balanced",
-    "svm__gamma": 0.1,
-    "svm__kernel": "rbf"
+    "svm__gamma": "scale",
+    "svm__kernel": "linear"
   },
-  "n_train": 6998
+  "n_train": 5879
 }
