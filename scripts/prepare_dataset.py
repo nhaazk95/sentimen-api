@@ -44,7 +44,10 @@ def main():
             labeled["label"] = labeled["reviewed_label"].fillna(labeled["label"])
             labeled = labeled.drop(columns=["reviewed_label"])
 
-    final = labeled[["text", "label"]]
+    cols = ["text", "label"]
+    if "text_processed" in labeled.columns:
+        cols.append("text_processed")
+    final = labeled[cols]
 
     os.makedirs(TRAINING_DIR, exist_ok=True)
     if os.path.exists(pool_path):

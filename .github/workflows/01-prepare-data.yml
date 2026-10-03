@@ -16,7 +16,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pandas==2.2.3 transformers torch --extra-index-url https://download.pytorch.org/whl/cpu
+        run: pip install pandas==2.2.3 transformers torch nltk==3.9.1 Sastrawi==1.0.1 --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Auto-label data baru
         run: python scripts/auto_label.py

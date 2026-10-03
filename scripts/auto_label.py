@@ -19,6 +19,8 @@ import re
 import pandas as pd
 from transformers import pipeline
 
+from preprocessing import full_preprocess, load_slang_dict
+
 # --- KONFIGURASI --------------------------------------------------------
 MODEL_NAME = "mdhugol/indonesia-bert-sentiment-classification"
 SAMPLE_FRACTION = 0.10           # tambahan random sample (di luar mismatch) utk spot-check
@@ -101,6 +103,14 @@ def load_incoming() -> pd.DataFrame:
 def main():
     df = load_incoming()
     print(f"[auto_label] {len(df)} ulasan baru (siap diberi label dari rating).")
+
+    # Text processing BERAT (stemming, buang stopword, emoji, tanda baca) -
+    # dijalanin di sini (Workflow 1), bukan ditunda sampai training.
+    # Kolom "text" asli TETAP disimpan apa adanya buat kebutuhan baca manual
+    # pas review PR; "text_processed" yang bakal dipakai model buat training.
+    print("[auto_label] Text processing (stemming, stopword, dsb)...")
+    slang_dict = load_slang_dict("slang_dict.json")
+    df["text_processed"] = df["text"].apply(lambda t: full_preprocess(t, slang_dict))
 
     # --- Label utama: dari rating bintang (ground truth) ------------------
     df["label"] = df["Rating"].apply(rating_to_label)
