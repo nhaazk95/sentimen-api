@@ -1,7 +1,10 @@
 import json
+import os
 import joblib
 import numpy as np
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 
@@ -29,6 +32,17 @@ def preprocess(text):
 
 
 app = FastAPI()
+
+# FIX (baru): izinkan dashboard di GitHub Pages (domain beda) memanggil API
+# ini langsung dari browser. Tanpa ini, fetch() dari browser ke /predict
+# atau /chat akan gagal kena CORS preflight -- bisa jadi penyebab kenapa
+# classifyWithSVM() di chat widget selama ini sering gagal diam-diam.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # bisa dipersempit ke "https://nhaazk95.github.io" nanti kalau mau lebih ketat
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ReviewInput(BaseModel):
@@ -71,6 +85,75 @@ def predict(data: ReviewInput):
         "f1_macro": F1_MACRO,
         "cv_f1_macro": CV_F1_MACRO
     }
+
+
+# ============================================================
+# BARU: endpoint /chat -- proxy ke Groq, supaya API key tidak pernah
+# ter-expose di kode dashboard (client-side), cuma disimpan sebagai
+# environment variable di server Render ini.
+# ============================================================
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # WAJIB diset di Render -> Environment
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+SYSTEM_INSTRUCTION = """Kamu adalah asisten analisis rumah sakit di Kabupaten Banyumas untuk sebuah dashboard web.
+
+Tugasmu:
+1. Membantu mencari/membandingkan RS berdasarkan data yang diberikan (rating, jumlah ulasan,
+   distribusi sentimen). Jangan menyebut satu RS sebagai "terbaik" mutlak -- beri beberapa
+   pilihan sesuai kondisi, urgensi, dan preferensi pengguna.
+2. Kalau user menempelkan teks ulasan untuk dianalisis, kamu akan diberi HASIL SENTIMEN dari
+   model SVM asli (bukan dari dirimu sendiri) -- gunakan itu apa adanya, JANGAN menebak sentimen
+   sendiri. Tambahkan breakdown aspek (HANYA dari 4 kategori: Dokter, Pelayanan, Farmasi, Petugas
+   -- aspek lain seperti perawat/fasilitas masuk ke kategori "Pelayanan"), topik utama (1 kalimat),
+   dan ringkasan singkat (2-3 kalimat).
+3. Kalau ditanya akurasi model, kutip angka tetap berikut (jangan menghitung/mengarang ulang):
+   CV F1-macro {cv_f1_macro}, akurasi uji manual (test set terpisah tanpa overlap dari training): {accuracy}.
+4. Kondisi darurat (nyeri dada berat, sesak berat, penurunan kesadaran, gejala stroke): prioritaskan
+   keselamatan, sarankan segera ke IGD terdekat, jangan tunda dengan perbandingan panjang.
+5. Jangan mendiagnosis atau menggantikan saran tenaga medis.
+
+Gunakan Bahasa Indonesia yang jelas, ringkas, dan netral.""".format(
+    cv_f1_macro=CV_F1_MACRO, accuracy=ACCURACY
+)
+
+
+class ChatMessage(BaseModel):
+    role: str   # "user" atau "model"
+    text: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[ChatMessage] = []
+
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(req: ChatRequest):
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
+
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    for m in req.history:
+        role = "user" if m.role == "user" else "assistant"
+        messages.append({"role": role, "content": m.text})
+    messages.append({"role": "user", "content": req.message})
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            GROQ_URL,
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "llama-3.3-70b-versatile", "messages": messages},
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
+        data = resp.json()
+        reply = data.get("choices", [{}])[0].get("message", {}).get("content", "Maaf, terjadi kesalahan.")
+
+    return ChatResponse(reply=reply)
 
 
 def custom_openapi():
