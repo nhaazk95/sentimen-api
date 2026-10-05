@@ -8,15 +8,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 
-from preprocessing import full_preprocess, load_slang_dict  # <- diambil dari modul bersama
+from preprocessing import full_preprocess, load_slang_dict  # modul bersama
 
-# Pipeline utuh (TF-IDF + SVM) — satu file
+# Pipeline utuh (TF-IDF + SVM) -- satu file
 pipeline = joblib.load('svm_pipeline.pkl')
 label_encoder = joblib.load('label_encoder.pkl')
 slang_dict = load_slang_dict('slang_dict.json')
 
-# Metrics sekarang dibaca dari file, bukan hardcoded, supaya otomatis
-# ter-update tiap kali pipeline retraining deploy model baru.
+# Metrics dibaca dari file supaya otomatis ter-update saat retraining
 with open('metrics.json', encoding='utf-8') as f:
     _metrics = json.load(f)
 
@@ -33,13 +32,10 @@ def preprocess(text):
 
 app = FastAPI()
 
-# FIX (baru): izinkan dashboard di GitHub Pages (domain beda) memanggil API
-# ini langsung dari browser. Tanpa ini, fetch() dari browser ke /predict
-# atau /chat akan gagal kena CORS preflight -- bisa jadi penyebab kenapa
-# classifyWithSVM() di chat widget selama ini sering gagal diam-diam.
+# Izinkan dashboard di GitHub Pages (domain beda) memanggil API dari browser
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # bisa dipersempit ke "https://nhaazk95.github.io" nanti kalau mau lebih ketat
+    allow_origins=["*"],  # bisa dipersempit ke "https://nhaazk95.github.io"
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -51,6 +47,7 @@ class ReviewInput(BaseModel):
 
 class PredictResponse(BaseModel):
     sentimen: str
+    clean_text: str          # BARU: teks hasil preprocessing
     confidence: float
     accuracy: float
     precision_macro: float
@@ -78,6 +75,7 @@ def predict(data: ReviewInput):
 
     return {
         "sentimen": label,
+        "clean_text": clean,   # BARU
         "confidence": round(confidence, 4),
         "accuracy": ACCURACY,
         "precision_macro": PRECISION_MACRO,
@@ -88,9 +86,8 @@ def predict(data: ReviewInput):
 
 
 # ============================================================
-# BARU: endpoint /chat -- proxy ke Groq, supaya API key tidak pernah
-# ter-expose di kode dashboard (client-side), cuma disimpan sebagai
-# environment variable di server Render ini.
+# Endpoint /chat -- proxy ke Groq, API key hanya ada di
+# environment variable server Render.
 # ============================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # WAJIB diset di Render -> Environment
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
