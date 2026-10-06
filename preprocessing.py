@@ -1,11 +1,3 @@
-"""
-Preprocessing teks — SATU-SATUNYA sumber kebenaran, dipakai oleh:
-- main.py            (saat inference/predict)
-- scripts/train_evaluate.py  (saat retrain)
-
-Kalau logic preprocessing berubah, ubah di sini saja, supaya training dan
-inference selalu konsisten.
-"""
 import json
 import re
 
@@ -28,7 +20,8 @@ _ensure_nltk_data()
 # Disinkronkan dengan kata_penting versi training terbaru
 KATA_PENTING = {
     "tidak", "belum", "sangat", "kurang", "terlalu", "sudah", "paling",
-    "lama", "sekali", "layanan", "dan", "di", "oke", "ber", "ter", "ada",
+    "lama", "sekali", "layanan", "dan", "di", "oke", "ber", "ter", "ada", "cukup", "ini",
+    "saya", "juga", "lagi", "peng", "an", "perawatan", "semakin", "selalu"
 }
 
 _stop_words = set(nltk_stopwords.words("indonesian")) - KATA_PENTING
@@ -44,7 +37,7 @@ def full_preprocess(text, slang_dict):
     text = "" if not text else str(text)
     text = text.lower()
     text = re.sub(r"(.)\1{2,}", r"\1", text)
-    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"[^\w\s]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = " ".join(slang_dict.get(w, w) for w in text.split())
     tokens = word_tokenize(text)
