@@ -1,20 +1,17 @@
-"""
-Retrain SVM (GridSearchCV) pakai preprocessing & struktur pipeline yang SAMA
-PERSIS dengan main.py (lihat scripts/preprocessing.py), lalu evaluasi ke
-test_set.csv (fixed) dan dibandingkan dengan model yang sedang live sekarang
-(root/metrics.json).
-
-Output kandidat: data/models/candidate/svm_pipeline.pkl, label_encoder.pkl,
-metrics.json. File-file ini baru dipindah ke root repo (menggantikan yang
-dipakai main.py) oleh workflow, KALAU should_deploy == true.
-"""
 import json
 import os
 
 import joblib
 import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
@@ -51,6 +48,7 @@ def load_baseline_metrics():
 
 
 def main():
+    os.makedirs(CANDIDATE_DIR, exist_ok=True)
     slang_dict = load_slang_dict("slang_dict.json")
 
     train_pool = pd.read_csv(os.path.join(TRAINING_DIR, "train_pool.csv"))
@@ -73,6 +71,14 @@ def main():
         print(f"[train_evaluate] PERINGATAN: dibuang {before_train - len(train_pool)} baris invalid "
               f"dari train_pool, {before_test - len(test_set)} dari test_set (label di luar 3 kategori valid).")
 
+    # Cegah data bocor: teks yang ada di test_set tidak boleh ikut training
+    norm = lambda s: s.astype(str).str.strip().str.lower()
+    bocor = norm(train_pool["text"]).isin(set(norm(test_set["text"])))
+    if bocor.any():
+        print(f"[train_evaluate] PERINGATAN: {bocor.sum()} teks di train_pool juga ada di test_set, "
+              f"dibuang dari train.")
+        train_pool = train_pool[~bocor].reset_index(drop=True)
+
     if UNDERSAMPLE:
         if "koreksi" not in train_pool.columns:
             train_pool["koreksi"] = 0
@@ -80,6 +86,7 @@ def main():
 
         counts = train_pool["label"].value_counts()
         cap = counts.min() * MAX_RATIO_TO_MINORITY
+        print(f"[train_evaluate] Undersampling: cap per kelas = {cap}. Sebelum: {dict(counts)}")
 
         parts = []
         for lbl, group in train_pool.groupby("label"):
@@ -90,6 +97,8 @@ def main():
                 sisa = sisa.sample(n=slot, random_state=42)
             parts.append(pd.concat([wajib, sisa]))
         train_pool = pd.concat(parts, ignore_index=True)
+        print(f"[train_evaluate] Sesudah undersampling: {dict(train_pool['label'].value_counts())}, "
+              f"koreksi ikut: {int(train_pool['koreksi'].sum())}")
 
     # Pakai "text_processed" kalau udah ada (diproses dari Workflow 1), biar
     # gak diproses dua kali. Baris lama yang belum punya kolom ini (sebelum
@@ -141,7 +150,6 @@ def main():
 
     # Confusion matrix + per-kelas breakdown, supaya kalau gagal lolos evaluasi,
     # kelihatan kelas mana yang jadi biang keroknya (biasanya Negatif/Netral).
-    from sklearn.metrics import classification_report, confusion_matrix
     labels_order = label_encoder.classes_
     print("[train_evaluate] Confusion matrix (baris=aktual, kolom=prediksi):")
     cm = confusion_matrix(y_test, y_pred)
@@ -170,7 +178,6 @@ def main():
 
     should_deploy = new_metrics["accuracy"] >= MIN_ACCURACY
 
-    os.makedirs(CANDIDATE_DIR, exist_ok=True)
     joblib.dump(best_pipeline, os.path.join(CANDIDATE_DIR, "svm_pipeline.pkl"))
     joblib.dump(label_encoder, os.path.join(CANDIDATE_DIR, "label_encoder.pkl"))
     with open(os.path.join(CANDIDATE_DIR, "metrics.json"), "w") as f:

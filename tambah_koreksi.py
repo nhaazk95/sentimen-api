@@ -1,7 +1,7 @@
 import csv
 import pandas as pd
 
-PATH = "train_pool.csv"
+PATH = "data/training/train_pool.csv"
 
 koreksi = [
     ("pelayanan sangat bagus tidak ada kekurangan", "Positif"),
