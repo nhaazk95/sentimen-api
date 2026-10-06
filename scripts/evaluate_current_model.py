@@ -5,6 +5,12 @@ from sklearn.metrics import (
     f1_score, precision_score, recall_score,
 )
 
+import os
+import sys
+
+# preprocessing.py ada di ROOT repo (satu-satunya sumber, dipakai juga oleh main.py)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 from preprocessing import full_preprocess, load_slang_dict
 
 pipeline = joblib.load("svm_pipeline.pkl")

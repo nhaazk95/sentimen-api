@@ -17,6 +17,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 from sklearn.svm import SVC
 
+import os
+import sys
+
+# preprocessing.py ada di ROOT repo (satu-satunya sumber, dipakai juga oleh main.py)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 from preprocessing import full_preprocess, load_slang_dict
 
 TRAINING_DIR = "data/training"
