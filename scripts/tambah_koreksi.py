@@ -12,6 +12,19 @@ koreksi = [
     ("radiologi baik", "Positif"),
     ("Langganan bunda sudah lama,pasien dokter Arinton ruang melati.pelayanan dokter dan perawat baik.anak cucu sudah langganan rsu bunda lamaa.mks RS bunda", "Positif"),
     ("Sya pasien de sutrisno ibu raniyah sya puasa dg pelyannyaaa", "Positif"),
+    ("Tempatnya bagus, pelayanannya engga! Sayang bgt. Sebaiknya management berbenah dan fokus dibidang sdm nya.", "Netral"),
+    ("Trimakasih sejak Oktober 2016.", "Netral"),
+    ("Pelayanan memuaskan,perawat sopan,dokter sopan", "Positif"),
+    ("sudah cukup.", "Netral"),
+    ("Tingkatkan lagi pelayanan yg sudah prima", "Netral"),
+    ("pelayanan sangat memuaskan", "Positif"),
+    ("Andalan keluarga kami dalam berobat dan kontrol kesehatan keluarga kami", "Netral"),
+    ("Semoga semakin amanah", "Netral"),
+    ("Melayani dengan sepenuh hati", "Positif"),
+    ("Bismillah, kemarin saya ada benjolan di PD kiri sejak 2020 awal covid,sempat periksa ke beberapa dokter tapi ragu untuk operasi Awal tahun ini makin besar diniatkan kembali untuk periksa ke dokter Qadarullah dipertemukan dengan dr.davin yang ramah dijelaskan Untuk semuanya bagus, baik dokter sama suster serta pelayanan saat kontrol, tapi Sangat di sayangkan untuk pelayanan pengambilan obat entah kenapa kok sangat TDK ramah dan tdk bisa menjelaskan kendalanya, sangat di sayangkan sekali.", "Netral"),
+    ("Nunggu obat lama banget, padahal pakai umum, semua dijadikan satu jadi terakhir yg menerima obat, pembayaran memakai Qris jg tambahan biayanya gede", "Negatif"),
+    ("Rs swasta terlengkap di Banyumas dan sekitarnya", "Positif"),
+    ("Utk radiologi\nPelayanan baik sekali", "Positif")
 ]
 
 df = pd.read_csv(PATH)
