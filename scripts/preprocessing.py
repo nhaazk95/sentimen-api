@@ -1,15 +1,3 @@
-"""
-Preprocessing teks — SATU-SATUNYA sumber kebenaran, dipakai oleh:
-- main.py                    (saat inference/predict)
-- scripts/train_evaluate.py  (saat retrain)
-
-Kalau logic preprocessing berubah, ubah di sini saja, supaya training dan
-inference selalu konsisten.
-
-Catatan: stopword removal SENGAJA dihapus. Daftar stopword NLTK Indonesia
-membuang kata sentimen/negasi (baik, bukan, tak, jangan, tanpa, tapi, namun,
-cukup, ...) dan terbukti menurunkan F1 macro.
-"""
 import json
 import re
 

@@ -1,14 +1,3 @@
-"""
-DIAGNOSTIK: evaluasi model yang SAAT INI live (svm_pipeline.pkl di root repo)
-memakai data/training/test_set.csv yang sama dengan yang dipakai buat menilai
-model kandidat hasil retrain.
-
-Tujuannya: mastiin apakah baseline metrics di metrics.json (0.9833 / 0.959)
-itu benar-benar sebanding kalau diuji di test_set.csv yang sekarang, atau
-jangan-jangan angka itu dulu dihitung dari test set yang berbeda (lebih
-besar/proporsinya beda), sehingga tidak apple-to-apple dibandingkan dengan
-model kandidat baru.
-"""
 import joblib
 import pandas as pd
 from sklearn.metrics import (

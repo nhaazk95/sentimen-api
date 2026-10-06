@@ -74,18 +74,22 @@ def main():
               f"dari train_pool, {before_test - len(test_set)} dari test_set (label di luar 3 kategori valid).")
 
     if UNDERSAMPLE:
+        if "koreksi" not in train_pool.columns:
+            train_pool["koreksi"] = 0
+        train_pool["koreksi"] = train_pool["koreksi"].fillna(0).astype(int)
+
         counts = train_pool["label"].value_counts()
-        min_count = counts.min()
-        cap = min_count * MAX_RATIO_TO_MINORITY
-        print(f"[train_evaluate] Undersampling: tiap kelas dibatasi maks {cap} baris "
-              f"({MAX_RATIO_TO_MINORITY}x dari kelas minoritas terkecil={min_count}). Sebelum: {dict(counts)}")
+        cap = counts.min() * MAX_RATIO_TO_MINORITY
+
         parts = []
         for lbl, group in train_pool.groupby("label"):
-            if len(group) > cap:
-                group = group.sample(n=cap, random_state=42)
-            parts.append(group)
+            wajib = group[group["koreksi"] == 1]       # selalu ikut
+            sisa = group[group["koreksi"] != 1]
+            slot = max(cap - len(wajib), 0)
+            if len(sisa) > slot:
+                sisa = sisa.sample(n=slot, random_state=42)
+            parts.append(pd.concat([wajib, sisa]))
         train_pool = pd.concat(parts, ignore_index=True)
-        print(f"[train_evaluate] Sesudah undersampling: {dict(train_pool['label'].value_counts())}")
 
     # Pakai "text_processed" kalau udah ada (diproses dari Workflow 1), biar
     # gak diproses dua kali. Baris lama yang belum punya kolom ini (sebelum

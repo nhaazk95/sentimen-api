@@ -1,16 +1,3 @@
-"""
-Menggabungkan hasil auto-label (yang sudah dikoreksi manual lewat spot-check)
-ke dalam training pool utama.
-
-Aturan koreksi:
-- Kalau baris ada di spot_check_sample.csv DAN kolom reviewed_label terisi,
-  pakai reviewed_label (hasil koreksi manusia).
-- Kalau tidak, pakai label otomatis dari IndoBERT apa adanya.
-
-Catatan penting: data/training/test_set.csv TIDAK PERNAH ditambah dari sini.
-Test set harus tetap sama dari waktu ke waktu supaya perbandingan performa
-antar retrain adil (apple-to-apple).
-"""
 import os
 from datetime import datetime
 
