@@ -143,7 +143,7 @@ async def chat(req: ChatRequest):
         resp = await client.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "llama-3.3-70b-versatile", "messages": messages},
+            json={"model": "openai/gpt-oss-120b", "messages": messages},
         )
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
