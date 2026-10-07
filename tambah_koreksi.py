@@ -39,7 +39,12 @@ koreksi = [
     ("Pelayanan poli gigi senin-sabtu pukul 13.00-16.00", "Netral"),
     ("ini saya juga lagi cari pengalaman", "Netral"),
     ("Observasi dan pasang pasak gigi di sini. Baru tau ternyata dokter gigi banyak spesialisasinya dan baru menyadari perawatan gigi itu mahal karena biasanya cukup ke dokter gigi umum", "Netral"),
-    ("Kasih nomor antrian pengambilan obat di farmasi jiwa.biar ada kepastian sudah sampai nomor berapa","Netral")
+    ("Kasih nomor antrian pengambilan obat di farmasi jiwa.biar ada kepastian sudah sampai nomor berapa","Netral"),
+    ("Sediakan tempat tidur untuk yang kontrol","Netral"),
+    ("Sudah cukup baik. Mohon dipertahankan", "Positif"),
+    ("Pelayanan nya sdh Bagus, tolong ditingkatkan lg y", "Positif"),
+    ("Saya kontrol hari ini", "Netral"),
+    ("Luas rumah sakitmya", "Netral")
 ]
 
 df = pd.read_csv(PATH)
