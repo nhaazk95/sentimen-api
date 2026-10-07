@@ -1,5 +1,6 @@
 import csv
 import pandas as pd
+import os
 
 PATH = "data/training/train_pool.csv"
 
@@ -58,6 +59,14 @@ df = pd.read_csv(PATH)
 if "koreksi" not in df.columns:
     df["koreksi"] = 0
 df["koreksi"] = df["koreksi"].fillna(0).astype(int)
+
+if os.path.exists("koreksi_dari_dashboard.csv"):
+    dash = pd.read_csv("koreksi_dari_dashboard.csv")
+    sudah = {t.strip().lower() for t, _ in koreksi}
+    for t, l in zip(dash["text"], dash["label"]):
+        if t.strip().lower() not in sudah:
+            koreksi.append((t, l))
+    print(f"Dari dashboard: {len(dash)} baris dibaca")
 
 baru = pd.DataFrame(koreksi, columns=["text", "label"])
 baru["koreksi"] = 1
