@@ -54,7 +54,11 @@ koreksi = [
     ("Bismillah, kemarin saya ada benjolan di PD kiri sejak 2020 awal covid,sempat periksa ke beberapa dokter tapi ragu untuk operasi Awal tahun ini makin besar diniatkan kembali untuk periksa ke dokter Qadarullah dipertemukan dengan dr.davin yang ramah dijelaskan sampai betul2 paham dari yang tadinya takut mau operasi jadi yakin alhamdulilah hasilnya jinak penyembuhan cepat bekas lukanya ngga keliatan setelah operasi masih dibekali pesan untuk jaga pola makan dan olahraga alhamdulilah bisa ditangani oleh dr.davin semoga Allah yang membalas kebaikan dokter mudah2an bisa olahraga rutin seperti dr.davin dan istri", "Positif"),
     ("mba mas dokternya ramahÂ²,playanan jga Oke,sayangnya klo k kantin pas ujan susah.", "Netral"),
     ("maaf kalo bersalin pake bpjs apakah kassa, tisu, kapas bawa sendiri atau dapat dr rs?", "Netral"),
-    ("Info biaya dan prosedur tes DNA. Trmksh", "Netral")
+    ("Info biaya dan prosedur tes DNA. Trmksh", "Netral"),
+    ("Adakah no lain yg BS kami hubungi? Dari kemarin saya hub no yg tertera di bio, katanya nomor TDK teregister.", "Netral"),
+    ("Ada nomer telepon yang bisa komunikasi lewat watsap gak??", "Netral"),
+    ("Pelayanan krng, petugas krng bnyk, lambat smua", "Negatif"),
+    ("Kurang menyenangkan karena pelayanan sangat lamaa", "Negatif")
 ]
 
 df = pd.read_csv(PATH)
