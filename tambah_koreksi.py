@@ -58,7 +58,8 @@ koreksi = [
     ("Adakah no lain yg BS kami hubungi? Dari kemarin saya hub no yg tertera di bio, katanya nomor TDK teregister.", "Netral"),
     ("Ada nomer telepon yang bisa komunikasi lewat watsap gak??", "Netral"),
     ("Pelayanan krng, petugas krng bnyk, lambat smua", "Negatif"),
-    ("Kurang menyenangkan karena pelayanan sangat lamaa", "Negatif")
+    ("Kurang menyenangkan karena pelayanan sangat lamaa", "Negatif"),
+    ("Pelayanan kamar operasi sangat baik dan detail", "Positif")
 ]
 
 df = pd.read_csv(PATH)
