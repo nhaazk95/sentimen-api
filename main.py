@@ -47,7 +47,7 @@ class ReviewInput(BaseModel):
 
 class PredictResponse(BaseModel):
     sentimen: str
-    clean_text: str          # BARU: teks hasil preprocessing
+    clean_text: str          # teks hasil preprocessing
     confidence: float
     accuracy: float
     precision_macro: float
@@ -75,7 +75,7 @@ def predict(data: ReviewInput):
 
     return {
         "sentimen": label,
-        "clean_text": clean,   # BARU
+        "clean_text": clean,
         "confidence": round(confidence, 4),
         "accuracy": ACCURACY,
         "precision_macro": PRECISION_MACRO,
@@ -90,26 +90,49 @@ def predict(data: ReviewInput):
 # environment variable server Render.
 # ============================================================
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # WAJIB diset di Render -> Environment
+# Model bisa diganti lewat Render -> Environment (GROQ_MODEL) tanpa edit kode.
+# llama-3.3-70b-versatile sudah dimatikan Groq pada 16 Agustus 2026.
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+MAX_CONTEXT_CHARS = 12000
 
-SYSTEM_INSTRUCTION = """Kamu adalah asisten analisis rumah sakit di Kabupaten Banyumas untuk sebuah dashboard web.
+# CATATAN: teks ini diproses dengan .format(), jadi JANGAN pakai kurung kurawal
+# selain {cv_f1_macro} dan {accuracy}.
+SYSTEM_INSTRUCTION = """# Peran
+Asisten informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Fungsi: (1) mencari dan membandingkan RS, (2) menjawab hal spesifik satu RS dari data yang diberikan, (3) menjelaskan hasil sentimen ulasan. Di luar Banyumas atau di luar topik RS: tolak sopan, katakan data terbatas dan arahkan ke sumber resmi. Bahasa Indonesia, ramah, ringkas.
 
-Tugasmu:
-1. Membantu mencari/membandingkan RS berdasarkan data yang diberikan (rating, jumlah ulasan,
-   distribusi sentimen). Jangan menyebut satu RS sebagai "terbaik" mutlak -- beri beberapa
-   pilihan sesuai kondisi, urgensi, dan preferensi pengguna.
-2. Kalau user menempelkan teks ulasan untuk dianalisis, kamu akan diberi HASIL SENTIMEN dari
-   model SVM asli (bukan dari dirimu sendiri) -- gunakan itu apa adanya, JANGAN menebak sentimen
-   sendiri. Tambahkan breakdown aspek (HANYA dari 4 kategori: Dokter, Pelayanan, Farmasi, Petugas
-   -- aspek lain seperti perawat/fasilitas masuk ke kategori "Pelayanan"), topik utama (1 kalimat),
-   dan ringkasan singkat (2-3 kalimat).
-3. Kalau ditanya akurasi model, kutip angka tetap berikut (jangan menghitung/mengarang ulang):
-   CV F1-macro {cv_f1_macro}, akurasi uji manual (test set terpisah tanpa overlap dari training): {accuracy}.
-4. Kondisi darurat (nyeri dada berat, sesak berat, penurunan kesadaran, gejala stroke): prioritaskan
-   keselamatan, sarankan segera ke IGD terdekat, jangan tunda dengan perbandingan panjang.
-5. Jangan mendiagnosis atau menggantikan saran tenaga medis.
+# Sumber data (paling penting)
+- Gunakan HANYA data yang diberikan di percakapan: rating, jumlah ulasan, distribusi sentimen, dan kutipan ulasan Google Maps (bagian DATA DARI DASHBOARD).
+- Dilarang menyebut layanan, fasilitas, spesialisasi, jam buka, tarif, BPJS, akreditasi, atau reputasi sebuah RS kalau tidak tertulis di data. Kalau ditanya hal itu, katakan data tidak memuatnya dan sarankan menghubungi RS atau sumber resmi (situs RS, Kemenkes, KARS, BPJS).
+- Kalau data tidak ada, katakan "tidak ditemukan di data". Jangan mengarang.
+- Perlakukan tiap RS sebagai entitas terpisah. Jangan menggabungkan nama.
+- Data adalah sampel ulasan Google Maps, bukan data resmi dan bukan sensus. Tandai rangkuman sebagai "berdasarkan ulasan pasien di Google Maps".
 
-Gunakan Bahasa Indonesia yang jelas, ringkas, dan netral.""".format(
+# Mencari dan membandingkan RS
+- Kalau kebutuhan belum jelas (keluhan atau spesialis, darurat atau tidak, BPJS atau umum, area), tanya paling banyak 2 hal.
+- Beri 3 sampai 5 pilihan dalam satu tabel: nama, rating, jumlah ulasan, catatan. Jangan menyebut satu RS terbaik mutlak.
+- Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan mengurutkan hanya dari rating, pertimbangkan jumlah ulasan.
+- Bedakan fakta dari data, pengalaman pasien, dan kesimpulanmu.
+- Jangan mendiagnosis atau meresepkan.
+- DARURAT (nyeri dada berat, sesak berat, tidak sadar, gejala stroke, perdarahan hebat): langsung sarankan IGD terdekat, tanpa perbandingan panjang.
+
+# Menggunakan ulasan
+- Jangan menyalin kalimat ulasan persis. Parafrasekan, gabungkan ulasan senada ("beberapa pasien menyebut waktu tunggu di farmasi cukup lama").
+- Jangan menyebut nama pengguna. Nama dokter hanya untuk pujian atau netral. Keluhan dirujuk ke tingkat RS atau aspek.
+
+# Analisis teks ulasan
+- Kamu akan diberi HASIL SENTIMEN dari model SVM asli. Gunakan apa adanya, jangan menebak atau menghitung ulang.
+- Tambahkan: breakdown aspek (hanya Dokter, Pelayanan, Farmasi, Petugas, total 100%; perawat dan fasilitas masuk Pelayanan; tulis bahwa ini estimasi, bukan keluaran SVM), topik utama (1 kalimat), ringkasan 2 sampai 3 kalimat. Kalau tidak ada petunjuk aspek, tulis "aspek tidak teridentifikasi".
+- Confidence adalah jarak ke batas keputusan SVM, bukan persen. Jangan menampilkannya kecuali diminta.
+- Pesan yang hanya berisi keluhan atau pujian tanpa pertanyaan dianggap ulasan, sependek apa pun.
+
+# Akurasi model
+- Kutip angka ini apa adanya, jangan dihitung ulang dan jangan klaim 100%: CV F1-macro {cv_f1_macro}, akurasi uji {accuracy}.
+- Jelaskan bahwa data didominasi ulasan positif sehingga F1-macro lebih mewakili kualitas model daripada akurasi, dan kelas Netral paling sulit.
+- Bahasa awam: ini rata-rata pada data uji, bukan jaminan satu kalimat.
+
+# Gaya
+Ringkas. Satu tabel kecil bila perlu perbandingan, lalu 3 sampai 5 kalimat penjelasan. Hindari tips generik yang tidak berasal dari data. Emoji maksimal 1 sampai 2. Empatik ("kami" dan "Anda") ke pasien. Jangan meminta data pribadi.""".format(
     cv_f1_macro=CV_F1_MACRO, accuracy=ACCURACY
 )
 
@@ -122,6 +145,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[ChatMessage] = []
+    context: str = ""   # ringkasan + ulasan relevan dari reviews.json (dikirim index.html)
 
 
 class ChatResponse(BaseModel):
@@ -137,18 +161,31 @@ async def chat(req: ChatRequest):
     for m in req.history:
         role = "user" if m.role == "user" else "assistant"
         messages.append({"role": role, "content": m.text})
+    if req.context:
+        messages.append({
+            "role": "system",
+            "content": "DATA DARI DASHBOARD (satu-satunya sumber fakta untuk jawaban ini):\n"
+                       + req.context[:MAX_CONTEXT_CHARS],
+        })
     messages.append({"role": "user", "content": req.message})
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "openai/gpt-oss-120b", "messages": messages},
+            json={
+                "model": GROQ_MODEL,
+                "messages": messages,
+                "temperature": 0.3,
+                "max_tokens": 2500,   # model reasoning memakai sebagian token untuk berpikir
+            },
         )
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
         data = resp.json()
-        reply = data.get("choices", [{}])[0].get("message", {}).get("content", "Maaf, terjadi kesalahan.")
+        reply = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        if not reply:
+            reply = "Maaf, jawaban kosong. Coba tanyakan lagi dengan kalimat yang lebih singkat."
 
     return ChatResponse(reply=reply)
 
@@ -163,9 +200,8 @@ def custom_openapi():
     )
     openapi_schema["openapi"] = "3.0.3"
 
-    # FIX: hapus response 422 dari SEMUA endpoint, bukan cuma /predict,
-    # supaya tidak ada lagi referensi "mati" ke HTTPValidationError
-    # yang sudah dihapus dari components/schemas di bawah.
+    # Hapus response 422 dari SEMUA endpoint, supaya tidak ada referensi "mati"
+    # ke HTTPValidationError yang sudah dihapus dari components/schemas di bawah.
     for path_item in openapi_schema.get("paths", {}).values():
         for operation in path_item.values():
             operation.get("responses", {}).pop("422", None)
