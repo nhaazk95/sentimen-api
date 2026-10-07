@@ -162,9 +162,15 @@ def custom_openapi():
         routes=app.routes,
     )
     openapi_schema["openapi"] = "3.0.3"
-    responses = openapi_schema["paths"]["/predict"]["post"]["responses"]
-    responses.pop("422", None)
-    schemas = openapi_schema["components"]["schemas"]
+
+    # FIX: hapus response 422 dari SEMUA endpoint, bukan cuma /predict,
+    # supaya tidak ada lagi referensi "mati" ke HTTPValidationError
+    # yang sudah dihapus dari components/schemas di bawah.
+    for path_item in openapi_schema.get("paths", {}).values():
+        for operation in path_item.values():
+            operation.get("responses", {}).pop("422", None)
+
+    schemas = openapi_schema.get("components", {}).get("schemas", {})
     schemas.pop("HTTPValidationError", None)
     schemas.pop("ValidationError", None)
     app.openapi_schema = openapi_schema
