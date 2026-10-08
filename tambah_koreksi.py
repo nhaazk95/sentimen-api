@@ -59,7 +59,23 @@ koreksi = [
     ("Ada nomer telepon yang bisa komunikasi lewat watsap gak??", "Netral"),
     ("Pelayanan krng, petugas krng bnyk, lambat smua", "Negatif"),
     ("Kurang menyenangkan karena pelayanan sangat lamaa", "Negatif"),
-    ("Pelayanan kamar operasi sangat baik dan detail", "Positif")
+    ("Pelayanan kamar operasi sangat baik dan detail", "Positif"),
+    ("Sangat baik sekali pelayanan ny", "Positif"),
+    ("Pelayanan ny bagus..ramah..", "Positif"),
+    ("sakit aja ada parkir 2 rb", "Netral"),
+    ("Pelayanan klinik laktasinya kerenn bgtt minnn. Recommended buat ibu baruuuu", "Positif"),
+    ("saya kasih bintang", "Netral"),
+    ("pelayanan poliklinik rsu medika lestari sangat baik", "Positif"),
+    ("Pernah dirawat di situ pelayanan sangat baik", "Positif"),
+    ("Bagus pelayanan tidak di ragukann", "Positif"),
+    ("Kemarin anakku sakit muntah disertai diare aku niatnya mau rawat jalan tapi ternyata sama dokter anak di suruh rawat inap karena sudah menunjukan gejala dehidrasi ,dan segera masuk IGD...padahal anaku pakai bpjs...tapi penanganannya cepat dan ga ribet sama sekali...kamar pasiennya juga nyaman dan bersih...,terimakasih rsu Medika lestari", "Positif"),
+    ("Pengalaman saya oprasi hemoroid di Rs medika lestari Awalnya takut (karena kata orang oprasi hemoroid itu sakit banget dll, )tapi ternyata gak sesakit yang dikatakan orang2. Kalau kalian punya keluhan hemoroid boleh tuh konsul sama dokter bedahnya di sini. Ternyata oprasinya gak sakit, cuma sakit sedikit aja pasca oprasinya. Ditambah lagi semua petugasnya ramah, dokter & dokter spesialisnya ternyata juga ramah bree,perawatnya cekatan juga, petugas kebersihannya juga peduli dengan lingkungan pasien, juru masaknya juga enak masakannya (pas dengan kondisi pasien) Manteplah semakin bagus rs nya. Semoga bisa menolong lebih banyak orang lagi. Dan rezekinya melimpah terus baik karyawanya, Ownernya ataupun pasien.amiin,", "Positif"),
+    ("pelayanan menyenangkan", "Positif"),
+    ("Layanan satset.. Bisa langsung oeprasi setelah dapat rujukan.. Maantaaapp.. Pasien safety", "Positif"),
+    ("mantap", "Positif"),
+    ("Suka sekali dengan pelayanan dr. Dwi dokternya ramah, pelayanannya sat set dan ngga sakit sama sekali", "Positif"),
+    ("RSU bagus", "Positif"),
+    ("Dear elisabeth hospital Im a student who is far from my mom. I have to go to doctor and doing my rutine fisiotherapy twice a week. Thank you for a very good very friendly service, its helping me a lot even i use BPJS. I am very grateful to all the staff who helped me and kindly asked about me.", "Positif")
 ]
 
 df = pd.read_csv(PATH)

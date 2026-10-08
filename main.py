@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import joblib
 import numpy as np
 import httpx
@@ -32,13 +33,22 @@ def preprocess(text):
 
 app = FastAPI()
 
-# Izinkan dashboard di GitHub Pages (domain beda) memanggil API dari browser
+# Izinkan dashboard di GitHub Pages (domain beda) memanggil API dari browser.
+# Default "*". Untuk mempersempit, set di Render -> Environment:
+#   ALLOWED_ORIGINS=https://nhaazk95.github.io
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # bisa dipersempit ke "https://nhaazk95.github.io"
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+def health():
+    # Dipakai scrape_update.py untuk membangunkan server (Render free tier)
+    return {"status": "ok"}
 
 
 class ReviewInput(BaseModel):
@@ -95,6 +105,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # WAJIB diset di Render -> Enviro
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_CONTEXT_CHARS = 12000
+MAX_HISTORY = 6
 
 # CATATAN: teks ini diproses dengan .format(), jadi JANGAN pakai kurung kurawal
 # selain {cv_f1_macro} dan {accuracy}.
@@ -103,12 +114,13 @@ Asisten informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Fungsi:
 
 # Sumber data (paling penting)
 - Gunakan HANYA data yang diberikan di percakapan: rating, jumlah ulasan, distribusi sentimen, dan kutipan ulasan Google Maps (bagian DATA DARI DASHBOARD).
-- Dilarang menyebut layanan, fasilitas, spesialisasi, jam buka, tarif, BPJS, akreditasi, atau reputasi sebuah RS kalau tidak tertulis di data. Kalau ditanya hal itu, katakan data tidak memuatnya dan sarankan menghubungi RS atau sumber resmi (situs RS, Kemenkes, KARS, BPJS).
-- Kalau data tidak ada, katakan "tidak ditemukan di data". Jangan mengarang.
+- Informasi tentang RS (layanan, poli, dokter, fasilitas, antrean, kebersihan, dan sebagainya) BOLEH disampaikan selama muncul di ulasan atau di angka rating dan sentimen pada data. Sebutkan sumbernya: "berdasarkan ulasan pasien di Google Maps".
+- Kalau informasi yang ditanyakan tidak ada di data, jawab terus terang bahwa kamu tidak tahu atau tidak menemukannya di ulasan. Jangan menebak dan jangan memakai pengetahuan di luar data.
 - Perlakukan tiap RS sebagai entitas terpisah. Jangan menggabungkan nama.
 - Data adalah sampel ulasan Google Maps, bukan data resmi dan bukan sensus. Tandai rangkuman sebagai "berdasarkan ulasan pasien di Google Maps".
 
 # Mencari dan membandingkan RS
+- Kalau pengguna meminta rekomendasi RS, jawab berdasarkan ulasan dan prediksi sentimen: pilih RS dengan persentase positif tinggi dan jumlah ulasan memadai, sebutkan angkanya (rating, jumlah ulasan, persen positif dan negatif), dan tema yang sering muncul di ulasan. Jelaskan bahwa ini rangkuman ulasan pasien, bukan penilaian resmi.
 - Kalau kebutuhan belum jelas (keluhan atau spesialis, darurat atau tidak, BPJS atau umum, area), tanya paling banyak 2 hal.
 - Beri 3 sampai 5 pilihan dalam satu tabel: nama, rating, jumlah ulasan, catatan. Jangan menyebut satu RS terbaik mutlak.
 - Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan mengurutkan hanya dari rating, pertimbangkan jumlah ulasan.
@@ -158,7 +170,7 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
 
     messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
-    for m in req.history:
+    for m in req.history[-MAX_HISTORY:]:
         role = "user" if m.role == "user" else "assistant"
         messages.append({"role": role, "content": m.text})
     if req.context:
@@ -180,6 +192,9 @@ async def chat(req: ChatRequest):
                 "max_tokens": 2500,   # model reasoning memakai sebagian token untuk berpikir
             },
         )
+        if resp.status_code == 429:
+            raise HTTPException(status_code=429,
+                                detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
         if resp.status_code != 200:
             raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
         data = resp.json()
@@ -188,6 +203,70 @@ async def chat(req: ChatRequest):
             reply = "Maaf, jawaban kosong. Coba tanyakan lagi dengan kalimat yang lebih singkat."
 
     return ChatResponse(reply=reply)
+
+
+# ============================================================
+# Endpoint /refresh -- memicu workflow GitHub (update-data.yml) dari tombol dashboard.
+# Token GitHub hanya ada di environment variable Render (GH_DISPATCH_TOKEN),
+# fine-grained token dengan izin "Actions: Read and write" untuk repo ini saja.
+# ============================================================
+GH_TOKEN = os.environ.get("GH_DISPATCH_TOKEN")
+GH_REPO = os.environ.get("GH_REPO", "nhaazk95/dashboard-rs-banyumas")
+GH_WORKFLOW = os.environ.get("GH_WORKFLOW_FILE", "update-data.yml")
+REFRESH_COOLDOWN_SEC = 900      # maksimal 1 kali per 15 menit untuk semua pengunjung
+_last_refresh = 0.0
+
+
+def _gh_headers():
+    return {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+@app.post("/refresh")
+async def refresh():
+    global _last_refresh
+    if not GH_TOKEN:
+        raise HTTPException(status_code=500, detail="GH_DISPATCH_TOKEN belum diset di server")
+
+    sisa = REFRESH_COOLDOWN_SEC - (time.time() - _last_refresh)
+    if sisa > 0:
+        raise HTTPException(status_code=429,
+                            detail=f"Update baru saja dijalankan. Coba lagi sekitar {int(sisa // 60) + 1} menit lagi.")
+
+    # Pasang cooldown sebelum memanggil GitHub, supaya dua klik bersamaan tidak lolos keduanya
+    sebelumnya = _last_refresh
+    _last_refresh = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"https://api.github.com/repos/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/dispatches",
+                headers=_gh_headers(), json={"ref": "main"})
+    except httpx.HTTPError as e:
+        _last_refresh = sebelumnya
+        raise HTTPException(status_code=502, detail=f"Gagal menghubungi GitHub: {e}")
+
+    if r.status_code != 204:
+        _last_refresh = sebelumnya
+        raise HTTPException(status_code=502, detail=f"GitHub API error: {r.status_code}")
+    return {"status": "dimulai"}
+
+
+@app.get("/refresh/status")
+async def refresh_status():
+    if not GH_TOKEN:
+        raise HTTPException(status_code=500, detail="GH_DISPATCH_TOKEN belum diset di server")
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(
+            f"https://api.github.com/repos/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/runs",
+            headers=_gh_headers(), params={"per_page": 1, "event": "workflow_dispatch"})
+    runs = r.json().get("workflow_runs", []) if r.status_code == 200 else []
+    if not runs:
+        return {"status": "unknown"}
+    return {"status": runs[0]["status"], "conclusion": runs[0]["conclusion"],
+            "created_at": runs[0]["created_at"]}
 
 
 def custom_openapi():
