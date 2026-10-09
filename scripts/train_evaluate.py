@@ -42,7 +42,7 @@ PARAM_GRID = {
     "svm__C": [1, 10, 100],
     "svm__gamma": ["scale", 0.01, 0.1],
     "svm__kernel": ["rbf"],
-    "svm__class_weight": [None, "balanced", {0: 1, 1: 1.5, 2: 1}, {0: 1, 1: 2, 2: 1}],
+    "svm__class_weight": ["balanced", {0: 1, 1: 3, 2: 1}, {0: 1, 1: 2, 2: 1}],
 }
 
 
