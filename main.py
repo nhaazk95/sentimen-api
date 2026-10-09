@@ -1,3 +1,4 @@
+import difflib
 import json
 import math
 import os
@@ -237,6 +238,26 @@ def _centroids():
 _KEC_CENTROID, _KOTA_ALIAS = _centroids()
 
 
+def _words(text):
+    return re.sub(r"[^a-z0-9 ]", " ", str(text).lower()).split()
+
+
+def _mentions(words, phrase, fuzzy=True):
+    """True bila frasa ada di daftar kata; toleran salah ketik ringan (mis. "puwokerto selatan")."""
+    pw = phrase.split()
+    n = len(pw)
+    if not pw or len(words) < n:
+        return False
+    target = " ".join(pw)
+    for i in range(len(words) - n + 1):
+        cand = " ".join(words[i:i + n])
+        if cand == target:
+            return True
+        if fuzzy and len(target) >= 6 and difflib.SequenceMatcher(None, cand, target).ratio() >= 0.88:
+            return True
+    return False
+
+
 def find_origin(req):
     """Titik acuan jarak: koordinat dari frontend, atau kecamatan yang disebut. None bila tidak ada."""
     if req.lat is not None and req.lng is not None and -90 <= req.lat <= 90 and -180 <= req.lng <= 180:
@@ -245,17 +266,17 @@ def find_origin(req):
         return None
     texts = [req.message] + [m.text for m in reversed(req.history[-4:]) if m.role == "user"]
     for t in texts:
-        low = " " + re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", t.lower())) + " "
+        words = _words(t)
         for kec in sorted(_KEC_CENTROID, key=len, reverse=True):
-            k = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", kec)).strip()
-            if kec in _KEC_AMBIGU:
-                hit = f" kecamatan {k} " in low or f" kec {k} " in low
+            k = " ".join(_words(kec))
+            if kec in _KEC_AMBIGU:   # hanya bila ditulis "kecamatan banyumas"
+                hit = _mentions(words, f"kecamatan {k}", fuzzy=False) or _mentions(words, f"kec {k}", fuzzy=False)
             else:
-                hit = f" {k} " in low
+                hit = _mentions(words, k)
             if hit:
                 return _KEC_CENTROID[kec][0], _KEC_CENTROID[kec][1], f"Kec. {kec.title()}"
         for name, c in _KOTA_ALIAS.items():
-            if f" {name} " in low:
+            if _mentions(words, name):
                 return c[0], c[1], "pusat kota Purwokerto"
     return None
 
@@ -350,33 +371,37 @@ def _norm_format(v):
 CHAT_FORMAT = _norm_format(os.environ.get("CHAT_FORMAT")) or "plain"
 
 FORMAT_PLAIN = """# Format jawaban (poin-poin, teks biasa, BUKAN Markdown)
-Jawabanmu ditampilkan apa adanya sebagai teks biasa. Dilarang memakai simbol Markdown: tanda bintang (* atau **), garis bawah untuk menebalkan, tanda pagar (#) untuk judul, backtick, dan tabel dengan karakter "|". Susun jawaban sebagai poin-poin yang mudah dipindai.
-Rekomendasi atau pencarian RS (paling banyak 3 sampai 4 RS, hanya yang relevan) ditulis begini:
-- Satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya.
-- Lalu tiap RS sebagai satu poin bernomor dengan tiga sub-poin, dipisah baris kosong antar RS, persis seperti ini:
+Jawabanmu ditampilkan apa adanya sebagai teks biasa. Dilarang memakai simbol Markdown: tanda bintang (* atau **), garis bawah untuk menebalkan, tanda pagar (#) untuk judul, backtick, dan tabel dengan karakter "|". Susun jawaban sebagai poin-poin yang rinci dan mudah dipindai.
+Rekomendasi, pencarian, atau RS terdekat (3 sampai 5 RS, hanya yang relevan) ditulis begini:
+- Satu sampai dua kalimat pembuka yang menyebut kebutuhan atau daerah pengguna, sumber datanya, dan titik acuan jarak bila ada (misalnya "dari Sokaraja").
+- Lalu tiap RS sebagai satu poin bernomor dengan sub-poin berikut, dipisah baris kosong antar RS:
 1. Nama RS (kecamatan)
-- Lokasi: nama jalan dan kecamatan saja
-- Kelebihan: ...
-- Catatan: ...
-- Bila relevan, lanjutkan dengan baris "💡 Tips umum" diikuti 2 sampai 3 poin pendek yang diawali "- ".
+- Lokasi: nama jalan dan kecamatan, ditambah "sekitar X km (garis lurus)" bila jarak tersedia
+- Rating: rata-rata dan jumlah ulasan di data
+- Kata pasien: 1 sampai 2 kalimat tentang hal yang paling sering dipuji atau disebut di ulasan (dokter, perawat, kebersihan, kecepatan layanan, IGD, parkir, dan sebagainya)
+- Perlu diperhatikan: keluhan yang sering muncul atau hal yang perlu dikonfirmasi; kalau di data tidak ada keluhan berarti, tulis demikian
+- Cocok untuk: satu kalimat, hanya bila bisa disimpulkan dari ulasan atau lokasi; kalau tidak, hilangkan baris ini
+- Setelah daftar RS, tulis "Kesimpulan:" 2 sampai 3 kalimat tentang RS mana yang paling pas untuk kebutuhan apa (jarak, rating, layanan yang disebut ulasan), tanpa menyebut satu RS terbaik mutlak.
+- Bila relevan, tambahkan "💡 Tips umum" diikuti 2 sampai 4 poin yang diawali "- ".
 - Lalu satu baris "⚠️ Catatan: ..." tentang batas data (sampel ulasan, bukan data resmi, konfirmasi jadwal dan BPJS ke RS).
 - Tutup dengan satu kalimat tawaran lanjutan.
-Panjang tiap sub-poin: maksimal sekitar 20 kata dan satu baris. Kelebihan berisi tema yang berulang di ulasan positif atau fakta dari PROFIL RS, dirangkum dengan kata-katamu sendiri tanpa tanda kutip. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka cukup rating dan jumlah ulasan (misalnya "rating 4,7 dari 84 ulasan"); jangan menghitung ulang persen.
-Membandingkan beberapa RS: tiap RS satu poin bernomor dengan sub-poin Rating, Jumlah ulasan, Kelebihan, dan Catatan, lalu kesimpulan 2 sampai 3 kalimat tentang mana yang cocok untuk kebutuhan apa.
-Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek, atau poin yang diawali "- ".
+Tiap sub-poin satu baris, maksimal sekitar 35 kata. Rangkum ulasan dengan kata-katamu sendiri tanpa tanda kutip; jangan menghitung ulang persen sentimen.
+Membandingkan beberapa RS: sama seperti di atas (poin bernomor per RS), lalu "Kesimpulan:" tentang mana yang cocok untuk kebutuhan apa.
+Pertanyaan tentang satu RS: jawab rinci dalam 2 sampai 4 paragraf pendek atau poin yang diawali "- ", mencakup rating, apa kata pasien, keluhan yang muncul, dan lokasi bila ada.
 Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
 
 FORMAT_RICH = """# Format jawaban (Markdown dengan tabel)
-- Rekomendasi atau pencarian RS (paling banyak 3 sampai 4 RS, hanya yang relevan): satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya; tabel Markdown dengan kolom persis No | Rumah Sakit | Lokasi | Kelebihan | Catatan; bila relevan satu baris "💡 Tips umum" diikuti 2 sampai 3 poin singkat yang diawali "- "; satu baris "⚠️ Catatan:" tentang batas data; satu kalimat tawaran lanjutan.
-- Membandingkan 2 RS atau lebih: tabel dengan kolom Aspek lalu satu kolom per RS, dan baris Rating, Jumlah ulasan, Kelebihan, Catatan; sesudahnya 2 sampai 3 kalimat kesimpulan tentang mana yang cocok untuk kebutuhan apa.
-- Aturan tabel: setiap sel ringkas (maksimal sekitar 18 kata), satu baris, tanpa baris baru, tanpa karakter "|" di dalam sel, tanpa huruf tebal. Lokasi cukup nama jalan dan kecamatan. Kelebihan berisi tema berulang di ulasan positif atau fakta dari PROFIL RS, dirangkum dengan kata-katamu sendiri tanpa tanda kutip. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka cukup rating dan jumlah ulasan; jangan menghitung ulang persen.
-- Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek atau poin yang diawali "- ", tanpa tabel.
+- Rekomendasi, pencarian, atau RS terdekat (3 sampai 5 RS, hanya yang relevan): satu sampai dua kalimat pembuka yang menyebut kebutuhan atau daerah pengguna dan sumber datanya; tabel Markdown dengan kolom persis No | Rumah Sakit | Rating | Lokasi | Kata pasien | Perlu diperhatikan; lalu "Kesimpulan:" 2 sampai 3 kalimat tentang RS mana yang pas untuk kebutuhan apa; bila relevan satu baris "💡 Tips umum" diikuti 2 sampai 4 poin yang diawali "- "; satu baris "⚠️ Catatan:" tentang batas data; satu kalimat tawaran lanjutan.
+- Isi tabel: Rating ditulis seperti "4,7 (84 ulasan)". Lokasi berisi nama jalan, kecamatan, dan "sekitar X km" bila jarak tersedia. Kata pasien merangkum hal yang paling sering dipuji di ulasan. Perlu diperhatikan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi.
+- Membandingkan 2 RS atau lebih: tabel dengan kolom Aspek lalu satu kolom per RS, dan baris Rating, Lokasi atau jarak, Kata pasien, Perlu diperhatikan; sesudahnya "Kesimpulan:" 2 sampai 3 kalimat tentang mana yang cocok untuk kebutuhan apa.
+- Aturan tabel: setiap sel satu baris, maksimal sekitar 25 kata, tanpa baris baru, tanpa karakter "|" di dalam sel, tanpa huruf tebal. Rangkum ulasan dengan kata-katamu sendiri tanpa tanda kutip; jangan menghitung ulang persen sentimen.
+- Pertanyaan tentang satu RS: jawab rinci dalam 2 sampai 4 paragraf pendek atau poin yang diawali "- ", tanpa tabel.
 - Dilarang memakai huruf tebal atau miring (tanda bintang), judul dengan tanda pagar, dan backtick. Tabel dan poin "- " boleh.
 - Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
 
 # Placeholder diisi dengan .replace() di bawah, jadi kurung kurawal bebas dipakai di teks ini.
 SYSTEM_TEMPLATE = """# Peran
-Kamu "Asisten RS Banyumas": pemandu informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Bicaralah seperti teman yang paham kondisi setempat: hangat, natural, langsung ke inti. Pakai "saya" untuk dirimu. Jangan memakai "kami" seolah kamu bagian dari rumah sakit, dan jangan membuka dengan basa-basi seperti "terima kasih sudah mempercayakan..." atau "pertanyaan bagus!". Bahasa Indonesia.
+Kamu "Asisten RS Banyumas": pemandu informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Bicaralah seperti teman yang paham kondisi setempat: hangat, natural, informatif, dan rinci. Pakai "saya" untuk dirimu. Jangan memakai "kami" seolah kamu bagian dari rumah sakit, dan jangan membuka dengan basa-basi seperti "terima kasih sudah mempercayakan..." atau "pertanyaan bagus!". Bahasa Indonesia.
 Di luar topik rumah sakit atau di luar Banyumas: tolak sopan dalam 1 sampai 2 kalimat, katakan data terbatas pada RS di Banyumas.
 
 # Sumber data
@@ -411,16 +436,15 @@ Aturan:
 - Parafrasekan dan gabungkan ulasan senada ("beberapa pasien menyebut antrean farmasi cukup lama"). Kutipan langsung paling banyak satu dan pendek.
 - Jangan menyebut nama pengguna. Nama dokter hanya untuk pujian atau hal netral. Keluhan dirujuk ke tingkat RS atau aspek layanan.
 
-# Analisis teks ulasan
-- Kalau pengguna menempelkan teks ulasan, kamu akan menerima HASIL SENTIMEN dari model SVM asli. Gunakan apa adanya, jangan menebak atau menghitung ulang.
-- Tambahkan: breakdown aspek (hanya Dokter, Pelayanan, Farmasi, Petugas, total 100%; perawat dan fasilitas masuk Pelayanan; tulis bahwa ini estimasi, bukan keluaran SVM), topik utama (1 kalimat), dan ringkasan 2 sampai 3 kalimat. Kalau tidak ada petunjuk aspek, tulis "aspek tidak teridentifikasi". Ikuti aturan format di atas.
-- Confidence adalah jarak ke batas keputusan SVM, bukan persen. Jangan menampilkannya kecuali diminta.
-- Pesan yang hanya berisi keluhan atau pujian tanpa pertanyaan dianggap ulasan, sependek apa pun.
+# Kamu bukan alat cek sentimen
+- Kamu asisten informasi rumah sakit. Setiap pesan pengguna adalah pertanyaan atau permintaan tentang rumah sakit di Banyumas, sependek apa pun (misalnya "rs di dekat purwokerto selatan" adalah permintaan RS terdekat, bukan ulasan).
+- Jangan pernah menulis "Sentimen:", "Aspek:", "Topik utama:", skor confidence, atau label Positif, Netral, Negatif untuk pesan pengguna. Kalau percakapan memuat teks bertanda HASIL SENTIMEN atau prediksi sentimen untuk pesan pengguna, abaikan sepenuhnya.
+- Kalau pengguna menempelkan sebuah ulasan, anggap itu konteks: tanggapi isinya (apa yang dikeluhkan atau dipuji, dan beri RS pembanding bila diminta) tanpa memberi label sentimen.
+- Persentase atau jumlah ulasan positif, netral, dan negatif sebuah RS dari DATA DARI DASHBOARD boleh dipakai sebagai fakta tentang RS itu.
+- Kalau ditanya tentang akurasi model sentimen dashboard: CV F1-macro {cv_f1_macro}, akurasi uji {accuracy}; itu rata-rata pada data uji, bukan jaminan untuk satu kalimat. Jangan menghitung ulang atau mengklaim 100%.
 
-# Akurasi model
-- Kutip angka ini apa adanya, jangan dihitung ulang dan jangan klaim 100%: CV F1-macro {cv_f1_macro}, akurasi uji {accuracy}.
-- Jelaskan bahwa data didominasi ulasan positif sehingga F1-macro lebih mewakili kualitas model daripada akurasi, dan kelas Netral paling sulit.
-- Dalam bahasa awam: ini rata-rata pada data uji, bukan jaminan untuk satu kalimat."""
+# Sapaan
+- Kalau pengguna hanya menyapa (halo, hai, selamat pagi, dan sejenisnya) atau bertanya apa yang bisa kamu lakukan, balas dengan sambutan hangat dan rinci: kamu bisa merekomendasikan RS sesuai kebutuhan (anak, ibu hamil, IGD, rawat inap), mencari RS terdekat dari suatu daerah, membandingkan RS, dan merangkum apa kata pasien tentang dokter, perawat, antrean, farmasi, IGD, kebersihan, dan parkir. Sertakan 3 contoh pertanyaan, lalu tunggu pertanyaan pengguna."""
 
 def system_instruction(fmt):
     rules = FORMAT_RICH if fmt == "rich" else FORMAT_PLAIN
@@ -481,13 +505,26 @@ def resolve_format(req_format):
     return _norm_format(req_format) or CHAT_FORMAT
 
 
+# Frontend lama memanggil /predict untuk tiap pesan lalu menyelipkan hasilnya. Baris seperti itu dibuang
+# supaya chatbot tidak ikut membuat analisis sentimen. Bila seluruh teks ikut terbuang, teks asli dipakai.
+_SENTIMEN_NOISE = re.compile(
+    r"(?im)^[^\n]*(hasil sentimen|prediksi sentimen|confidence)[^\n]*$\n?|^\s*(sentimen|aspek|topik utama)\s*:[^\n]*$\n?")
+
+
+def _bersihkan(text):
+    out = _SENTIMEN_NOISE.sub("", text or "").strip()
+    return out or (text or "")
+
+
 def build_messages(req: ChatRequest):
-    history = req.history[-MAX_HISTORY:]
+    history = [ChatMessage(role=m.role, text=_bersihkan(m.text)) for m in req.history[-MAX_HISTORY:]]
+    message = _bersihkan(req.message)
+    context = _bersihkan(req.context) if req.context else ""
     messages = [{"role": "system", "content": system_instruction(resolve_format(req.format))}]
 
     # Profil RS + kutipan ulasan dari Data_RS_Banyumas.xlsx, dipilih berdasarkan percakapan saat ini
     user_turns = [m.text for m in history if m.role == "user"][-2:]
-    profil, kutipan = build_rs_blocks(req, " ".join([req.message] + user_turns))
+    profil, kutipan = build_rs_blocks(req, " ".join([message] + user_turns))
     if profil:
         messages.append({"role": "system", "content": profil})
     if kutipan:
@@ -496,16 +533,16 @@ def build_messages(req: ChatRequest):
             "content": "KUTIPAN ULASAN (dari data ulasan Google Maps, dipilih karena relevan dengan pertanyaan; "
                        "tanpa nama pengguna; parafrasekan, jangan disalin):\n" + kutipan,
         })
-    if req.context:
+    if context:
         messages.append({
             "role": "system",
             "content": "DATA DARI DASHBOARD (rating, sentimen, dan kutipan ulasan Google Maps):\n"
-                       + req.context[:MAX_CONTEXT_CHARS],
+                       + context[:MAX_CONTEXT_CHARS],
         })
 
     for m in history:
         messages.append({"role": "user" if m.role == "user" else "assistant", "content": m.text})
-    messages.append({"role": "user", "content": req.message})
+    messages.append({"role": "user", "content": message})
     return messages
 
 

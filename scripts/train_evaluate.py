@@ -39,10 +39,10 @@ MAX_RATIO_TO_MINORITY = 5
 # Nama step HARUS "tfidf" dan "svm" - main.py mengakses lewat
 # pipeline.named_steps['svm'] dan pipeline.named_steps['tfidf']
 PARAM_GRID = {
-    "svm__C": [0.1, 1, 10, 100],
-    "svm__gamma": ["scale", 0.01, 0.1, 1],
-    "svm__kernel": ["rbf", "linear"],
-    "svm__class_weight": [None, "balanced"],  # penting krn data timpang (~82% Positif)
+    "svm__C": [1, 10, 100],
+    "svm__gamma": ["scale", 0.01, 0.1],
+    "svm__kernel": ["rbf"],
+    "svm__class_weight": [None, "balanced", {0: 1, 1: 1.5, 2: 1}, {0: 1, 1: 2, 2: 1}],
 }
 
 
