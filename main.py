@@ -1,8 +1,9 @@
 import json
+import math
 import os
 import re
 import time
-from collections import deque
+from collections import Counter, defaultdict, deque
 from typing import Optional
 
 import joblib
@@ -100,71 +101,226 @@ def predict(data: ReviewInput):
 
 
 # ============================================================
-# Profil RS dari Data_RS_Banyumas.xlsx (opsional)
-# Taruh file di root repo ini (sejajar main.py). Kolom apa pun dibaca apa adanya:
-# tiap baris jadi satu baris teks "Kolom: nilai | Kolom: nilai". Kalau file tidak
-# ada atau tidak terbaca, chatbot tetap jalan hanya dengan data dari dashboard.
+# Data_RS_Banyumas.xlsx -- satu baris = satu ULASAN (Nama RS, Rating, Lokasi Tempat, Latitude,
+# Longitude, Isi Ulasan, clean_text, dst.). Dari file ini dibangun tiga hal:
+#   1) profil per RS: alamat, kecamatan, koordinat, rata-rata rating, jumlah ulasan
+#   2) jarak perkiraan (garis lurus) dari titik acuan: lokasi pengguna (lat/lng dari frontend)
+#      atau kecamatan yang disebut di chat (titik acuan = lokasi RS di kecamatan itu)
+#   3) kutipan ulasan yang relevan dengan pertanyaan (pencarian kata kunci pada clean_text)
+# Taruh file di root repo ini. Kalau file tidak ada atau kolom "Nama RS" tidak ditemukan,
+# chatbot tetap jalan hanya dengan data dari dashboard.
 # ============================================================
 DATA_RS_PATH = os.environ.get("DATA_RS_PATH", "Data_RS_Banyumas.xlsx")
-PROFILE_BUDGET = int(os.environ.get("PROFILE_BUDGET", "7000"))     # batas karakter profil per request
-PROFILE_ROW_MAX = 600                                              # batas karakter per RS
+PROFILE_BUDGET = int(os.environ.get("PROFILE_BUDGET", "16000"))   # batas karakter blok profil per request
+MAX_REVIEW_SNIPPETS = 12      # kutipan ulasan relevan yang dikirim ke model
+SNIPPET_CHARS = 220
+NEAR_KM = 15                  # di atas jarak ini RS tidak boleh disebut "terdekat"
 
-_STOP = {"yang", "dan", "untuk", "dengan", "dari", "atau", "adalah", "saya", "kamu", "anda",
-         "rumah", "sakit", "ada", "apa", "bisa", "mau", "cari", "tolong", "dong",
-         "rekomendasi", "banyumas", "purwokerto", "kabupaten", "rsud", "rsu", "hospital"}
+_STOP = {"yang", "dan", "untuk", "dengan", "dari", "atau", "adalah", "saya", "kamu", "anda", "rumah", "sakit",
+         "ada", "apa", "bisa", "mau", "cari", "carikan", "tolong", "dong", "rekomendasi", "rekomendasikan",
+         "banyumas", "purwokerto", "kabupaten", "rsud", "rsu", "hospital", "dekat", "terdekat", "daerah",
+         "dimana", "mana", "berada", "lokasi", "tinggal"}
+_KEC_AMBIGU = {"banyumas"}    # kecamatan yang namanya sama dengan kabupaten: hanya dipakai bila ditulis "kecamatan banyumas"
 
 
-def _tokens(text):
-    return {t for t in re.findall(r"[a-z0-9]{3,}", str(text).lower()) if t not in _STOP}
+def _ncol(c):
+    return re.sub(r"[^a-z0-9]", "", str(c).lower())
 
 
-def _load_rs_profiles(path):
+def _find_col(df, *names):
+    cols = {_ncol(c): c for c in df.columns}
+    for n in names:
+        if _ncol(n) in cols:
+            return cols[_ncol(n)]
+    return None
+
+
+def _to_float(v):
+    """Menerima angka biasa maupun desimal koma ("-7,5180652")."""
+    try:
+        f = float(str(v).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _kecamatan(addr):
+    m = re.search(r"Kec\.?\s*([^,]+)", addr or "", flags=re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _haversine(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(a))
+
+
+def _load_rs_data(path):
+    """Mengembalikan (hospitals, reviews). Keduanya list kosong bila file tidak bisa dipakai."""
     if not os.path.exists(path):
-        print(f"[chat] {path} tidak ditemukan; lanjut tanpa profil RS", flush=True)
-        return []
+        print(f"[chat] {path} tidak ditemukan; lanjut tanpa data RS", flush=True)
+        return [], []
     try:
         import pandas as pd
         sheets = pd.read_excel(path, sheet_name=None)
     except Exception as e:  # openpyxl belum terpasang, file rusak, dll.
-        print(f"[chat] {path} tidak terbaca ({e}); lanjut tanpa profil RS", flush=True)
-        return []
-    rows = []
-    for df in sheets.values():
-        df = df.dropna(how="all").dropna(axis=1, how="all")
-        for _, r in df.iterrows():
-            parts = []
-            for col, val in r.items():
-                if pd.isna(val):
-                    continue
-                s = re.sub(r"\s+", " ", str(val)).strip()
-                if s:
-                    parts.append(f"{str(col).strip()}: {s}")
-            if len(parts) >= 2:
-                rows.append(" | ".join(parts)[:PROFILE_ROW_MAX])
-    print(f"[chat] {len(rows)} baris profil RS dimuat dari {path}", flush=True)
-    return rows
+        print(f"[chat] {path} tidak terbaca ({e}); lanjut tanpa data RS", flush=True)
+        return [], []
+    frames = [d for d in sheets.values() if _find_col(d, "Nama RS", "Nama Rumah Sakit")]
+    if not frames:
+        print("[chat] kolom 'Nama RS' tidak ditemukan; lanjut tanpa data RS", flush=True)
+        return [], []
+    df = pd.concat(frames, ignore_index=True)
+    c_nama = _find_col(df, "Nama RS", "Nama Rumah Sakit")
+    c_rat = _find_col(df, "Rating")
+    c_addr = _find_col(df, "Lokasi Tempat", "Alamat", "Lokasi")
+    c_lat = _find_col(df, "Latitude", "Lat")
+    c_lon = _find_col(df, "Longitude", "Lng", "Lon", "Long")
+    c_text = _find_col(df, "Isi Ulasan", "Ulasan", "Review")
+    c_clean = _find_col(df, "clean_text")
+
+    agg = defaultdict(lambda: {"n": 0, "rat": [], "addr": Counter(), "lat": [], "lon": []})
+    reviews = []
+    for _, r in df.iterrows():
+        nama = str(r[c_nama]).strip() if pd.notna(r[c_nama]) else ""
+        if not nama or nama.lower() == "nan":
+            continue
+        h = agg[nama]
+        h["n"] += 1
+        rt = _to_float(r[c_rat]) if c_rat else None
+        if rt is not None:
+            h["rat"].append(rt)
+        if c_addr and pd.notna(r[c_addr]) and str(r[c_addr]).strip():
+            h["addr"][re.sub(r"\s+", " ", str(r[c_addr])).strip()] += 1
+        la = _to_float(r[c_lat]) if c_lat else None
+        lo = _to_float(r[c_lon]) if c_lon else None
+        if la is not None and lo is not None and -90 <= la <= 90 and -180 <= lo <= 180:
+            h["lat"].append(la)
+            h["lon"].append(lo)
+        if c_text and c_clean and pd.notna(r[c_text]) and pd.notna(r[c_clean]):
+            txt = re.sub(r"\s+", " ", str(r[c_text])).strip()
+            tok = set(str(r[c_clean]).split())
+            if len(txt) >= 25 and tok:                       # username sengaja tidak dibawa
+                reviews.append({"rs": nama, "rating": rt, "text": txt, "tok": tok})
+
+    hospitals = []
+    for nama, h in agg.items():
+        addr = h["addr"].most_common(1)[0][0] if h["addr"] else ""
+        lat = sorted(h["lat"])[len(h["lat"]) // 2] if h["lat"] else None   # median
+        lon = sorted(h["lon"])[len(h["lon"]) // 2] if h["lon"] else None
+        hospitals.append({"nama": nama, "alamat": addr, "kec": _kecamatan(addr), "lat": lat, "lon": lon,
+                          "n": h["n"], "rating": (sum(h["rat"]) / len(h["rat"])) if h["rat"] else None})
+    print(f"[chat] data RS: {len(hospitals)} RS, {df.shape[0]} ulasan, {len(reviews)} ulasan bisa dikutip", flush=True)
+    return hospitals, reviews
 
 
-RS_PROFILES = _load_rs_profiles(DATA_RS_PATH)
-_RS_TOKENS = [_tokens(r) for r in RS_PROFILES]
+RS_HOSPITALS, RS_REVIEWS = _load_rs_data(DATA_RS_PATH)
+_N_REV = len(RS_REVIEWS)
+_REV_INDEX = defaultdict(list)
+for _i, _rv in enumerate(RS_REVIEWS):
+    for _t in _rv["tok"]:
+        _REV_INDEX[_t].append(_i)
 
 
-def pick_profiles(query):
-    """Semua profil bila muat dalam budget; kalau tidak, utamakan yang paling cocok dengan percakapan."""
-    if not RS_PROFILES:
+def _centroids():
+    pts = defaultdict(list)
+    for h in RS_HOSPITALS:
+        if h["kec"] and h["lat"] is not None:
+            pts[h["kec"].lower()].append((h["lat"], h["lon"]))
+    cen = {k: (sum(a for a, _ in v) / len(v), sum(b for _, b in v) / len(v)) for k, v in pts.items()}
+    pwt = [c for k, c in cen.items() if k.startswith("purwokerto")]
+    alias = {"purwokerto": (sum(a for a, _ in pwt) / len(pwt), sum(b for _, b in pwt) / len(pwt))} if pwt else {}
+    return cen, alias
+
+
+_KEC_CENTROID, _KOTA_ALIAS = _centroids()
+
+
+def find_origin(req):
+    """Titik acuan jarak: koordinat dari frontend, atau kecamatan yang disebut. None bila tidak ada."""
+    if req.lat is not None and req.lng is not None and -90 <= req.lat <= 90 and -180 <= req.lng <= 180:
+        return req.lat, req.lng, "lokasi pengguna"
+    if not _KEC_CENTROID:
+        return None
+    texts = [req.message] + [m.text for m in reversed(req.history[-4:]) if m.role == "user"]
+    for t in texts:
+        low = " " + re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", t.lower())) + " "
+        for kec in sorted(_KEC_CENTROID, key=len, reverse=True):
+            k = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]", " ", kec)).strip()
+            if kec in _KEC_AMBIGU:
+                hit = f" kecamatan {k} " in low or f" kec {k} " in low
+            else:
+                hit = f" {k} " in low
+            if hit:
+                return _KEC_CENTROID[kec][0], _KEC_CENTROID[kec][1], f"Kec. {kec.title()}"
+        for name, c in _KOTA_ALIAS.items():
+            if f" {name} " in low:
+                return c[0], c[1], "pusat kota Purwokerto"
+    return None
+
+
+def _review_block(query, allowed):
+    if not _N_REV:
         return ""
-    if sum(len(r) + 3 for r in RS_PROFILES) <= PROFILE_BUDGET:
-        chosen = RS_PROFILES
+    toks = {t for t in preprocess(query).split()
+            if len(t) >= 3 and t not in _STOP and t in _REV_INDEX and len(_REV_INDEX[t]) <= 0.4 * _N_REV}
+    if not toks:
+        return ""
+    score = Counter()
+    for t in toks:
+        w = math.log(1 + _N_REV / len(_REV_INDEX[t]))
+        for i in _REV_INDEX[t]:
+            score[i] += w
+    chosen, per_rs = [], Counter()
+    for i, _ in sorted(score.items(), key=lambda kv: (-kv[1], len(RS_REVIEWS[kv[0]]["text"]))):
+        rv = RS_REVIEWS[i]
+        if (allowed is not None and rv["rs"] not in allowed) or per_rs[rv["rs"]] >= 2:
+            continue
+        per_rs[rv["rs"]] += 1
+        txt = rv["text"] if len(rv["text"]) <= SNIPPET_CHARS else rv["text"][:SNIPPET_CHARS].rsplit(" ", 1)[0] + "..."
+        rt = f", rating {int(rv['rating'])}/5" if rv["rating"] is not None else ""
+        chosen.append(f'- {rv["rs"]}{rt}: "{txt}"')
+        if len(chosen) >= MAX_REVIEW_SNIPPETS:
+            break
+    return "\n".join(chosen)
+
+
+def build_rs_blocks(req, query):
+    """Mengembalikan (teks_profil, teks_kutipan_ulasan); string kosong bila data RS tidak tersedia."""
+    if not RS_HOSPITALS:
+        return "", ""
+    origin = find_origin(req)
+    if origin:
+        ranked = []
+        for h in RS_HOSPITALS:
+            d = _haversine(origin[0], origin[1], h["lat"], h["lon"]) if h["lat"] is not None else None
+            ranked.append((d, h))
+        ranked.sort(key=lambda x: (x[0] is None, x[0] if x[0] is not None else 0))
     else:
-        q = _tokens(query)
-        order = sorted(range(len(RS_PROFILES)), key=lambda i: (-len(q & _RS_TOKENS[i]), i))
-        chosen, used = [], 0
-        for i in order:
-            if used + len(RS_PROFILES[i]) + 3 > PROFILE_BUDGET:
-                continue
-            chosen.append(RS_PROFILES[i])
-            used += len(RS_PROFILES[i]) + 3
-    return "\n".join(f"- {r}" for r in chosen)
+        ranked = [(None, h) for h in sorted(RS_HOSPITALS, key=lambda h: -h["n"])]
+
+    lines, used = [], 0
+    for d, h in ranked:
+        parts = [f"Nama: {h['nama']}"]
+        if h["alamat"]:
+            parts.append(f"Alamat: {h['alamat']}")
+        if h["rating"] is not None:
+            parts.append(f"Rating rata-rata di data: {h['rating']:.2f} dari {h['n']} ulasan")
+        if d is not None:
+            parts.append(f"Jarak perkiraan: {d:.1f} km")
+        line = "- " + " | ".join(parts)
+        if used + len(line) + 1 > PROFILE_BUDGET:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    head = "PROFIL RS (dari Data_RS_Banyumas.xlsx; sumber alamat dan jumlah ulasan"
+    if origin:
+        head += f"; DIURUTKAN dari yang terdekat ke {origin[2]}, jarak = garis lurus perkiraan, bukan jarak rute"
+    profil = head + "):\n" + "\n".join(lines)
+
+    allowed = {h["nama"] for d, h in ranked[:8]} if origin else None
+    return profil, _review_block(query, allowed)
 
 
 # ============================================================
@@ -181,35 +337,42 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_CONTEXT_CHARS = 12000
 MAX_HISTORY = 8
 
-# Dua mode tampilan jawaban, dipilih lewat environment variable CHAT_FORMAT di Render:
-#   plain (default) = teks biasa tanpa simbol Markdown, RS ditulis sebagai blok per RS
-#   table           = Markdown dengan tabel (perlu frontend yang merender Markdown, mis. chat-ui.js)
-CHAT_FORMAT = os.environ.get("CHAT_FORMAT", "plain").strip().lower()
+# Dua mode tampilan jawaban:
+#   plain = poin-poin, teks biasa tanpa simbol Markdown (aman di halaman apa pun). DEFAULT.
+#   rich  = Markdown dengan tabel untuk perbandingan (hanya untuk frontend yang merender Markdown, mis. chat-ui.js).
+# Frontend boleh meminta mode lewat field "format" di body /chat; kalau tidak ada, dipakai CHAT_FORMAT
+# (environment variable di Render, default plain). "table" dianggap sama dengan "rich".
+def _norm_format(v):
+    v = (v or "").strip().lower()
+    return "rich" if v in ("rich", "table") else ("plain" if v == "plain" else "")
 
-FORMAT_PLAIN = """# Format jawaban (teks biasa, BUKAN Markdown)
-Jawabanmu ditampilkan apa adanya sebagai teks biasa. Dilarang memakai simbol Markdown: tanda bintang (* atau **), garis bawah untuk menebalkan, tanda pagar (#) untuk judul, backtick, dan tabel dengan karakter "|". Untuk menekankan sesuatu cukup pilih kata yang tepat.
-Rekomendasi atau pencarian RS (3 sampai 5 RS) ditulis begini:
+
+CHAT_FORMAT = _norm_format(os.environ.get("CHAT_FORMAT")) or "plain"
+
+FORMAT_PLAIN = """# Format jawaban (poin-poin, teks biasa, BUKAN Markdown)
+Jawabanmu ditampilkan apa adanya sebagai teks biasa. Dilarang memakai simbol Markdown: tanda bintang (* atau **), garis bawah untuk menebalkan, tanda pagar (#) untuk judul, backtick, dan tabel dengan karakter "|". Susun jawaban sebagai poin-poin yang mudah dipindai.
+Rekomendasi atau pencarian RS (paling banyak 3 sampai 4 RS, hanya yang relevan) ditulis begini:
 - Satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya.
-- Lalu satu blok per RS, dipisah baris kosong, dengan pola persis seperti ini:
-1. Nama lengkap RS
-Lokasi: ...
-Kelebihan: ...
-Catatan: ...
-- Bila relevan, lanjutkan dengan baris "💡 Tips ..." diikuti 2 sampai 4 poin pendek, tiap poin diawali "- ".
+- Lalu tiap RS sebagai satu poin bernomor dengan tiga sub-poin, dipisah baris kosong antar RS, persis seperti ini:
+1. Nama RS (kecamatan)
+- Lokasi: nama jalan dan kecamatan saja
+- Kelebihan: ...
+- Catatan: ...
+- Bila relevan, lanjutkan dengan baris "💡 Tips umum" diikuti 2 sampai 3 poin pendek yang diawali "- ".
 - Lalu satu baris "⚠️ Catatan: ..." tentang batas data (sampel ulasan, bukan data resmi, konfirmasi jadwal dan BPJS ke RS).
-- Tutup dengan satu kalimat tawaran lanjutan, misalnya mempersempit berdasarkan BPJS atau area.
-Isi baris Lokasi, Kelebihan, dan Catatan ringkas (sekitar 25 kata) dan tetap satu baris. Kelebihan berisi tema yang berulang di ulasan positif atau fakta dari PROFIL RS, diparafrasekan. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka (rating, jumlah ulasan, persen positif) disebut singkat hanya bila membantu membedakan RS, misalnya "rating 4,9 dari 374 ulasan".
-Membandingkan beberapa RS: satu blok per RS dengan baris Rating, Jumlah ulasan, Persen positif, Kelebihan, dan Catatan, lalu 2 sampai 3 kalimat kesimpulan.
+- Tutup dengan satu kalimat tawaran lanjutan.
+Panjang tiap sub-poin: maksimal sekitar 20 kata dan satu baris. Kelebihan berisi tema yang berulang di ulasan positif atau fakta dari PROFIL RS, dirangkum dengan kata-katamu sendiri tanpa tanda kutip. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka cukup rating dan jumlah ulasan (misalnya "rating 4,7 dari 84 ulasan"); jangan menghitung ulang persen.
+Membandingkan beberapa RS: tiap RS satu poin bernomor dengan sub-poin Rating, Jumlah ulasan, Kelebihan, dan Catatan, lalu kesimpulan 2 sampai 3 kalimat tentang mana yang cocok untuk kebutuhan apa.
 Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek, atau poin yang diawali "- ".
-Panjang: di luar blok RS kira-kira maksimal 150 kata. Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
+Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
 
-FORMAT_TABLE = """# Format jawaban (Markdown)
-- Rekomendasi atau pencarian RS: satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya; tabel Markdown 3 sampai 5 RS dengan kolom persis No | Rumah Sakit | Lokasi | Kelebihan | Catatan; bila relevan bagian "💡 Tips" berisi 2 sampai 4 poin singkat; satu baris "⚠️ Catatan:" tentang batas data; satu kalimat tawaran lanjutan.
-- Aturan tabel: isi sel ringkas (maksimal sekitar 25 kata), satu baris per sel, tanpa baris baru, tanpa karakter "|" di dalam sel, tanpa huruf tebal di dalam sel. Kelebihan berisi tema berulang di ulasan positif atau fakta dari PROFIL RS, diparafrasekan. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka disebut singkat hanya bila membantu membedakan RS.
-- Membandingkan 2 RS atau lebih: tabel dengan kolom aspek (rating, jumlah ulasan, persen positif, kelebihan, catatan), lalu 2 sampai 3 kalimat kesimpulan.
-- Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek atau poin, tanpa tabel.
-- Tulis Markdown standar: tabel, daftar bullet, dan **tebal** secukupnya di luar tabel. Jangan pakai HTML dan jangan pakai heading besar.
-- Di luar tabel kira-kira maksimal 150 kata. Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
+FORMAT_RICH = """# Format jawaban (Markdown dengan tabel)
+- Rekomendasi atau pencarian RS (paling banyak 3 sampai 4 RS, hanya yang relevan): satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya; tabel Markdown dengan kolom persis No | Rumah Sakit | Lokasi | Kelebihan | Catatan; bila relevan satu baris "💡 Tips umum" diikuti 2 sampai 3 poin singkat yang diawali "- "; satu baris "⚠️ Catatan:" tentang batas data; satu kalimat tawaran lanjutan.
+- Membandingkan 2 RS atau lebih: tabel dengan kolom Aspek lalu satu kolom per RS, dan baris Rating, Jumlah ulasan, Kelebihan, Catatan; sesudahnya 2 sampai 3 kalimat kesimpulan tentang mana yang cocok untuk kebutuhan apa.
+- Aturan tabel: setiap sel ringkas (maksimal sekitar 18 kata), satu baris, tanpa baris baru, tanpa karakter "|" di dalam sel, tanpa huruf tebal. Lokasi cukup nama jalan dan kecamatan. Kelebihan berisi tema berulang di ulasan positif atau fakta dari PROFIL RS, dirangkum dengan kata-katamu sendiri tanpa tanda kutip. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka cukup rating dan jumlah ulasan; jangan menghitung ulang persen.
+- Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek atau poin yang diawali "- ", tanpa tabel.
+- Dilarang memakai huruf tebal atau miring (tanda bintang), judul dengan tanda pagar, dan backtick. Tabel dan poin "- " boleh.
+- Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
 
 # Placeholder diisi dengan .replace() di bawah, jadi kurung kurawal bebas dipakai di teks ini.
 SYSTEM_TEMPLATE = """# Peran
@@ -217,22 +380,30 @@ Kamu "Asisten RS Banyumas": pemandu informasi rumah sakit di Kabupaten Banyumas 
 Di luar topik rumah sakit atau di luar Banyumas: tolak sopan dalam 1 sampai 2 kalimat, katakan data terbatas pada RS di Banyumas.
 
 # Sumber data
-Kamu menerima tiga sumber, dan hanya boleh memakai ketiganya:
+Kamu menerima empat sumber, dan hanya boleh memakai keempatnya:
 1. DATA DARI DASHBOARD: rating, jumlah ulasan, sebaran sentimen, dan kutipan ulasan pasien di Google Maps.
-2. PROFIL RS: data tabel RS (alamat atau lokasi, jenis RS, layanan, dan kolom lain sesuai file).
-3. Isi percakapan.
+2. PROFIL RS: nama, alamat, rata-rata rating dan jumlah ulasan di data, serta jarak perkiraan bila ada.
+3. KUTIPAN ULASAN: beberapa ulasan pasien yang relevan dengan pertanyaan.
+4. Isi percakapan.
 Aturan:
 - Lokasi atau alamat hanya dari PROFIL RS. Kalau tidak ada, tulis "alamat belum ada di data". Jangan mengarang alamat, nomor telepon, jadwal dokter, tarif, ketersediaan BPJS, jumlah tempat tidur, atau nama dokter.
-- Klaim layanan (poli anak, NICU, IGD 24 jam, spesialis tertentu) hanya boleh bila tertulis di PROFIL RS atau disebut di ulasan. Kalau tidak ada, tulis "belum terkonfirmasi di data, sebaiknya tanya langsung ke RS". Jangan menyimpulkan dari reputasi atau ukuran RS.
+- Klaim layanan (poli anak, NICU, IGD 24 jam, spesialis tertentu) hanya boleh bila disebut di ulasan (KUTIPAN ULASAN atau DATA DARI DASHBOARD). PROFIL RS tidak memuat daftar layanan. Kalau tidak ada, tulis "belum terkonfirmasi di data, sebaiknya tanya langsung ke RS". Jangan menyimpulkan dari reputasi atau ukuran RS.
 - Ulasan Google Maps adalah sampel pengalaman pasien, bukan data resmi dan bukan sensus. Sebut sumbernya secara natural ("dari ulasan pasien di Google Maps").
 - Tiap RS adalah entitas terpisah. Pakai nama lengkap seperti di data dan jangan menggabungkan dua RS.
 - Bedakan dengan jelas: fakta dari data, pengalaman pasien, dan kesimpulanmu.
 
 # Cara menjawab
 1. Jawab dulu, tanya belakangan. Kalau permintaan sudah cukup jelas (misalnya "rekomendasi RS untuk anak", "RS dengan IGD bagus", "anak demam"), langsung beri rekomendasi dengan asumsi yang masuk akal, lalu tawarkan penyempitan di akhir. Bertanya hanya jika tanpa jawabannya rekomendasi bisa salah arah, maksimal satu pertanyaan pendek. Kalau pengguna sudah menjawab pertanyaanmu satu kali, pada giliran berikutnya kamu wajib memberi rekomendasi, jangan bertanya lagi.
-2. Urutan RS: relevansi dengan kebutuhan lebih dulu, lalu persentase positif dan jumlah ulasan. Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan menyebut satu RS "terbaik mutlak". Kalau data hanya cukup untuk kurang dari 3 RS, tampilkan yang ada dan katakan terus terang.
+2. Urutan RS: relevansi dengan kebutuhan lebih dulu (termasuk kedekatan lokasi bila pengguna menyebut daerah), lalu persentase positif dan jumlah ulasan. Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan menyebut satu RS "terbaik mutlak". Kalau data hanya cukup untuk kurang dari 3 RS, tampilkan yang ada dan katakan terus terang.
 3. Tips umum yang aman boleh disampaikan walau tidak berasal dari data, dan harus ditandai sebagai tips umum: tanda bahaya yang perlu segera ke IGD, membawa kartu identitas dan kartu BPJS serta surat rujukan bila memakai BPJS, menghubungi RS dulu untuk memastikan jadwal dokter. Jangan mendiagnosis, jangan menyarankan obat atau dosis.
 4. DARURAT (nyeri dada berat, sesak berat, tidak sadar, kejang, gejala stroke, perdarahan hebat): kalimat pertama langsung sarankan ke IGD terdekat atau hubungi 112, tanpa perbandingan panjang.
+
+# Lokasi dan kedekatan
+- Kalau PROFIL RS diurutkan dari yang terdekat dan memuat "Jarak perkiraan", pakai urutan dan angka itu apa adanya dan tulis sebagai "sekitar X km (garis lurus)". Jangan merekomendasikan RS yang jaraknya lebih dari 15 km dari titik acuan, kecuali tidak ada RS lain yang relevan; kalau begitu, katakan terus terang bahwa lokasinya cukup jauh.
+- Kalau pengguna menyebut daerah (kecamatan, desa, atau kawasan) dan menanyakan RS terdekat, nilai kedekatan dari alamat di PROFIL RS. Urutan: RS di kecamatan atau desa yang sama lebih dulu, lalu RS di kecamatan yang bersebelahan atau di kota Purwokerto bila memang itu yang paling dekat, baru yang lebih jauh. Pengetahuan geografi umum Banyumas boleh dipakai hanya untuk menilai jarak antar kecamatan, bukan untuk fakta tentang RS.
+- Jangan menyebut RS yang jelas jauh (beda arah dan kira-kira lebih dari 15 km) sebagai "terdekat", dan jangan mengisi daftar dengan RS jauh hanya demi mencapai 3 RS. Kalau hanya 1 sampai 2 RS yang dekat, tampilkan itu saja, lalu katakan jarak pastinya belum ada di data sehingga rutenya perlu dicek di Google Maps.
+- Tulis alamat secara singkat: nama jalan dan kecamatan, tanpa kode pos dan tanpa rincian dusun atau RT/RW.
+- Setiap RS yang kamu sebut di bagian mana pun jawabanmu, termasuk di Catatan, harus ada di daftar jawabanmu. Jangan menyebut RS lain di luar daftar.
 
 {format_rules}
 
@@ -251,14 +422,20 @@ Aturan:
 - Jelaskan bahwa data didominasi ulasan positif sehingga F1-macro lebih mewakili kualitas model daripada akurasi, dan kelas Netral paling sulit.
 - Dalam bahasa awam: ini rata-rata pada data uji, bukan jaminan untuk satu kalimat."""
 
-SYSTEM_INSTRUCTION = (SYSTEM_TEMPLATE
-                      .replace("{format_rules}", FORMAT_TABLE if CHAT_FORMAT == "table" else FORMAT_PLAIN)
-                      .replace("{cv_f1_macro}", str(CV_F1_MACRO))
-                      .replace("{accuracy}", str(ACCURACY)))
+def system_instruction(fmt):
+    rules = FORMAT_RICH if fmt == "rich" else FORMAT_PLAIN
+    return (SYSTEM_TEMPLATE
+            .replace("{format_rules}", rules)
+            .replace("{cv_f1_macro}", str(CV_F1_MACRO))
+            .replace("{accuracy}", str(ACCURACY)))
 
 
-def to_plain_text(text):
-    """Pengaman: buang simbol Markdown yang lolos dari model (**, #, backtick, tabel |)."""
+SYSTEM_INSTRUCTION = system_instruction(CHAT_FORMAT)   # dipertahankan untuk kompatibilitas
+
+
+def to_plain_text(text, keep_tables=False):
+    """Pengaman: buang simbol Markdown yang lolos dari model (**, #, backtick).
+    keep_tables=False juga mengubah baris tabel | ... | menjadi satu baris biasa."""
     s = str(text).replace("\r\n", "\n")
     s = re.sub(r"```[a-zA-Z]*\n?|```", "", s)                     # blok kode
     s = re.sub(r"`([^`\n]*)`", r"\1", s)                          # kode inline
@@ -266,15 +443,17 @@ def to_plain_text(text):
     s = re.sub(r"(?m)^(\s*)[*\u2022]\s+", r"\1- ", s)              # bullet * atau titik -> "- "
     s = re.sub(r"(\*\*|__)(.+?)\1", r"\2", s, flags=re.S)           # tebal
     s = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", s)                    # judul #
-    out = []
-    for line in s.split("\n"):                                      # tabel | ... | -> satu baris biasa
-        if re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*", line):
-            continue
-        if re.fullmatch(r"\s*\|.*\|\s*", line):
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            line = " - ".join(c for c in cells if c)
-        out.append(line)
-    s = "\n".join(out).replace("*", "")                              # sisa bintang
+    if not keep_tables:
+        out = []
+        for line in s.split("\n"):                                  # tabel | ... | -> satu baris biasa
+            if re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*", line):
+                continue
+            if re.fullmatch(r"\s*\|.*\|\s*", line):
+                cells = [c.strip() for c in line.strip().strip("|").split("|")]
+                line = " - ".join(c for c in cells if c)
+            out.append(line)
+        s = "\n".join(out)
+    s = s.replace("*", "")                                          # sisa bintang
     s = re.sub(r"[ \t]+\n", "\n", s)
     s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
@@ -289,23 +468,33 @@ class ChatRequest(BaseModel):
     message: str
     history: list[ChatMessage] = []
     context: str = ""   # ringkasan + ulasan relevan dari reviews.json (dikirim index.html)
+    format: str = ""    # opsional: "plain" (poin-poin) atau "rich" (tabel); kosong = CHAT_FORMAT
+    lat: Optional[float] = None   # opsional: lokasi pengguna (navigator.geolocation) untuk menghitung RS terdekat
+    lng: Optional[float] = None
 
 
 class ChatResponse(BaseModel):
     reply: str
 
 
+def resolve_format(req_format):
+    return _norm_format(req_format) or CHAT_FORMAT
+
+
 def build_messages(req: ChatRequest):
     history = req.history[-MAX_HISTORY:]
-    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    messages = [{"role": "system", "content": system_instruction(resolve_format(req.format))}]
 
-    # Profil RS dipilih berdasarkan topik percakapan saat ini
-    query = " ".join([req.message] + [m.text for m in history[-3:]] + [req.context[:3000]])
-    profiles = pick_profiles(query)
-    if profiles:
+    # Profil RS + kutipan ulasan dari Data_RS_Banyumas.xlsx, dipilih berdasarkan percakapan saat ini
+    user_turns = [m.text for m in history if m.role == "user"][-2:]
+    profil, kutipan = build_rs_blocks(req, " ".join([req.message] + user_turns))
+    if profil:
+        messages.append({"role": "system", "content": profil})
+    if kutipan:
         messages.append({
             "role": "system",
-            "content": "PROFIL RS (dari Data_RS_Banyumas.xlsx; sumber untuk lokasi dan layanan):\n" + profiles,
+            "content": "KUTIPAN ULASAN (dari data ulasan Google Maps, dipilih karena relevan dengan pertanyaan; "
+                       "tanpa nama pengguna; parafrasekan, jangan disalin):\n" + kutipan,
         })
     if req.context:
         messages.append({
@@ -347,8 +536,7 @@ async def chat(req: ChatRequest):
             raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
         data = resp.json()
         reply = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-        if CHAT_FORMAT != "table":
-            reply = to_plain_text(reply)
+        reply = to_plain_text(reply, keep_tables=(resolve_format(req.format) == "rich"))
         if not reply:
             reply = "Maaf, jawaban kosong. Coba tanyakan lagi dengan kalimat yang lebih singkat."
 
