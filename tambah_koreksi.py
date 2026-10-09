@@ -79,7 +79,10 @@ koreksi = [
     ("pelayanan memuaskan tidak ada kekurangan", "Positif"),
     ("Selama dirumah sakit Ajibarang (ruang bersalin) untuk Bu bidannya ramah-ramah", "Positif"),
     ("WA slow respon bangetttt, Nyediain kontak WA biar bisa daftar online tp balesnya bisa 1 hari kemudian..", "Negatif"),
-    ("Pelayanan di rsud Ajibarang memuaskan,saya baru menunggu bapak diruang kenari bawah, terimakasih  atas pelayanan perawat dan dokternya yang baik semoga semakin meningkat pelayanannya", "Positif")
+    ("Pelayanan di rsud Ajibarang memuaskan,saya baru menunggu bapak diruang kenari bawah, terimakasih  atas pelayanan perawat dan dokternya yang baik semoga semakin meningkat pelayanannya", "Positif"),
+    ("IGDnya cukup baik", "Positif"),
+    ("Kegiatan Pelatihan pencegahan dan pengendalian PPI Angk 1 di RSUD Prof Dr. Margono Soekarjo.... sungguh luar biasa. Ditunggu rekan2 yg mau bergabung", "Positif"),
+    ("Farmasi rawat jalan semangat,tetap sabar dan teliti meski pasien tumpuk", "Positif")
 ]
 
 df = pd.read_csv(PATH)
