@@ -88,7 +88,8 @@ koreksi = [
     ("Baik dengan segi pelayanan dan tindakan", "Positif"),
     ("Excellen", "Positif"),
     ("Pelayanan poli sarafbgs", "Positif"),
-    ("Trimakasih atas pelayanan merawat  keluarga  kami,Baik doctor,perawatnya yg ramah.semoga rsu  medical lestari bms,semakin maju kedepanya", "Positif")
+    ("Trimakasih atas pelayanan merawat  keluarga  kami,Baik doctor,perawatnya yg ramah.semoga rsu  medical lestari bms,semakin maju kedepanya", "Positif"),
+    ("Pelayanan cepat,ramah,,semoga amanah slalu", "Positif")
 ]
 
 df = pd.read_csv(PATH)
