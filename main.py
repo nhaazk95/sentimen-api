@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from collections import deque
 from typing import Optional
@@ -99,6 +100,74 @@ def predict(data: ReviewInput):
 
 
 # ============================================================
+# Profil RS dari Data_RS_Banyumas.xlsx (opsional)
+# Taruh file di root repo ini (sejajar main.py). Kolom apa pun dibaca apa adanya:
+# tiap baris jadi satu baris teks "Kolom: nilai | Kolom: nilai". Kalau file tidak
+# ada atau tidak terbaca, chatbot tetap jalan hanya dengan data dari dashboard.
+# ============================================================
+DATA_RS_PATH = os.environ.get("DATA_RS_PATH", "Data_RS_Banyumas.xlsx")
+PROFILE_BUDGET = int(os.environ.get("PROFILE_BUDGET", "7000"))     # batas karakter profil per request
+PROFILE_ROW_MAX = 600                                              # batas karakter per RS
+
+_STOP = {"yang", "dan", "untuk", "dengan", "dari", "atau", "adalah", "saya", "kamu", "anda",
+         "rumah", "sakit", "ada", "apa", "bisa", "mau", "cari", "tolong", "dong",
+         "rekomendasi", "banyumas", "purwokerto", "kabupaten", "rsud", "rsu", "hospital"}
+
+
+def _tokens(text):
+    return {t for t in re.findall(r"[a-z0-9]{3,}", str(text).lower()) if t not in _STOP}
+
+
+def _load_rs_profiles(path):
+    if not os.path.exists(path):
+        print(f"[chat] {path} tidak ditemukan; lanjut tanpa profil RS", flush=True)
+        return []
+    try:
+        import pandas as pd
+        sheets = pd.read_excel(path, sheet_name=None)
+    except Exception as e:  # openpyxl belum terpasang, file rusak, dll.
+        print(f"[chat] {path} tidak terbaca ({e}); lanjut tanpa profil RS", flush=True)
+        return []
+    rows = []
+    for df in sheets.values():
+        df = df.dropna(how="all").dropna(axis=1, how="all")
+        for _, r in df.iterrows():
+            parts = []
+            for col, val in r.items():
+                if pd.isna(val):
+                    continue
+                s = re.sub(r"\s+", " ", str(val)).strip()
+                if s:
+                    parts.append(f"{str(col).strip()}: {s}")
+            if len(parts) >= 2:
+                rows.append(" | ".join(parts)[:PROFILE_ROW_MAX])
+    print(f"[chat] {len(rows)} baris profil RS dimuat dari {path}", flush=True)
+    return rows
+
+
+RS_PROFILES = _load_rs_profiles(DATA_RS_PATH)
+_RS_TOKENS = [_tokens(r) for r in RS_PROFILES]
+
+
+def pick_profiles(query):
+    """Semua profil bila muat dalam budget; kalau tidak, utamakan yang paling cocok dengan percakapan."""
+    if not RS_PROFILES:
+        return ""
+    if sum(len(r) + 3 for r in RS_PROFILES) <= PROFILE_BUDGET:
+        chosen = RS_PROFILES
+    else:
+        q = _tokens(query)
+        order = sorted(range(len(RS_PROFILES)), key=lambda i: (-len(q & _RS_TOKENS[i]), i))
+        chosen, used = [], 0
+        for i in order:
+            if used + len(RS_PROFILES[i]) + 3 > PROFILE_BUDGET:
+                continue
+            chosen.append(RS_PROFILES[i])
+            used += len(RS_PROFILES[i]) + 3
+    return "\n".join(f"- {r}" for r in chosen)
+
+
+# ============================================================
 # Endpoint /chat -- proxy ke Groq, API key hanya ada di
 # environment variable server Render.
 # ============================================================
@@ -106,50 +175,109 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # WAJIB diset di Render -> Enviro
 # Model bisa diganti lewat Render -> Environment (GROQ_MODEL) tanpa edit kode.
 # llama-3.3-70b-versatile sudah dimatikan Groq pada 16 Agustus 2026.
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+# Opsional: "low" | "medium" | "high" untuk model reasoning. Kosong = tidak dikirim.
+GROQ_REASONING_EFFORT = os.environ.get("GROQ_REASONING_EFFORT", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_CONTEXT_CHARS = 12000
-MAX_HISTORY = 6
+MAX_HISTORY = 8
 
-# CATATAN: teks ini diproses dengan .format(), jadi JANGAN pakai kurung kurawal
-# selain {cv_f1_macro} dan {accuracy}.
-SYSTEM_INSTRUCTION = """# Peran
-Asisten informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Fungsi: (1) mencari dan membandingkan RS, (2) menjawab hal spesifik satu RS dari data yang diberikan, (3) menjelaskan hasil sentimen ulasan. Di luar Banyumas atau di luar topik RS: tolak sopan, katakan data terbatas dan arahkan ke sumber resmi. Bahasa Indonesia, ramah, ringkas.
+# Dua mode tampilan jawaban, dipilih lewat environment variable CHAT_FORMAT di Render:
+#   plain (default) = teks biasa tanpa simbol Markdown, RS ditulis sebagai blok per RS
+#   table           = Markdown dengan tabel (perlu frontend yang merender Markdown, mis. chat-ui.js)
+CHAT_FORMAT = os.environ.get("CHAT_FORMAT", "plain").strip().lower()
 
-# Sumber data (paling penting)
-- Gunakan HANYA data yang diberikan di percakapan: rating, jumlah ulasan, distribusi sentimen, dan kutipan ulasan Google Maps (bagian DATA DARI DASHBOARD).
-- Informasi tentang RS (layanan, poli, dokter, fasilitas, antrean, kebersihan, dan sebagainya) BOLEH disampaikan selama muncul di ulasan atau di angka rating dan sentimen pada data. Sebutkan sumbernya: "berdasarkan ulasan pasien di Google Maps".
-- Kalau informasi yang ditanyakan tidak ada di data, jawab terus terang bahwa kamu tidak tahu atau tidak menemukannya di ulasan. Jangan menebak dan jangan memakai pengetahuan di luar data.
-- Perlakukan tiap RS sebagai entitas terpisah. Jangan menggabungkan nama.
-- Data adalah sampel ulasan Google Maps, bukan data resmi dan bukan sensus. Tandai rangkuman sebagai "berdasarkan ulasan pasien di Google Maps".
+FORMAT_PLAIN = """# Format jawaban (teks biasa, BUKAN Markdown)
+Jawabanmu ditampilkan apa adanya sebagai teks biasa. Dilarang memakai simbol Markdown: tanda bintang (* atau **), garis bawah untuk menebalkan, tanda pagar (#) untuk judul, backtick, dan tabel dengan karakter "|". Untuk menekankan sesuatu cukup pilih kata yang tepat.
+Rekomendasi atau pencarian RS (3 sampai 5 RS) ditulis begini:
+- Satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya.
+- Lalu satu blok per RS, dipisah baris kosong, dengan pola persis seperti ini:
+1. Nama lengkap RS
+Lokasi: ...
+Kelebihan: ...
+Catatan: ...
+- Bila relevan, lanjutkan dengan baris "💡 Tips ..." diikuti 2 sampai 4 poin pendek, tiap poin diawali "- ".
+- Lalu satu baris "⚠️ Catatan: ..." tentang batas data (sampel ulasan, bukan data resmi, konfirmasi jadwal dan BPJS ke RS).
+- Tutup dengan satu kalimat tawaran lanjutan, misalnya mempersempit berdasarkan BPJS atau area.
+Isi baris Lokasi, Kelebihan, dan Catatan ringkas (sekitar 25 kata) dan tetap satu baris. Kelebihan berisi tema yang berulang di ulasan positif atau fakta dari PROFIL RS, diparafrasekan. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka (rating, jumlah ulasan, persen positif) disebut singkat hanya bila membantu membedakan RS, misalnya "rating 4,9 dari 374 ulasan".
+Membandingkan beberapa RS: satu blok per RS dengan baris Rating, Jumlah ulasan, Persen positif, Kelebihan, dan Catatan, lalu 2 sampai 3 kalimat kesimpulan.
+Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek, atau poin yang diawali "- ".
+Panjang: di luar blok RS kira-kira maksimal 150 kata. Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
 
-# Mencari dan membandingkan RS
-- Kalau pengguna meminta rekomendasi RS, jawab berdasarkan ulasan dan prediksi sentimen: pilih RS dengan persentase positif tinggi dan jumlah ulasan memadai, sebutkan angkanya (rating, jumlah ulasan, persen positif dan negatif), dan tema yang sering muncul di ulasan. Jelaskan bahwa ini rangkuman ulasan pasien, bukan penilaian resmi.
-- Kalau kebutuhan belum jelas (keluhan atau spesialis, darurat atau tidak, BPJS atau umum, area), tanya paling banyak 2 hal.
-- Beri 3 sampai 5 pilihan dalam satu tabel: nama, rating, jumlah ulasan, catatan. Jangan menyebut satu RS terbaik mutlak.
-- Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan mengurutkan hanya dari rating, pertimbangkan jumlah ulasan.
-- Bedakan fakta dari data, pengalaman pasien, dan kesimpulanmu.
-- Jangan mendiagnosis atau meresepkan.
-- DARURAT (nyeri dada berat, sesak berat, tidak sadar, gejala stroke, perdarahan hebat): langsung sarankan IGD terdekat, tanpa perbandingan panjang.
+FORMAT_TABLE = """# Format jawaban (Markdown)
+- Rekomendasi atau pencarian RS: satu kalimat pembuka yang menyebut kebutuhan pengguna dan sumber datanya; tabel Markdown 3 sampai 5 RS dengan kolom persis No | Rumah Sakit | Lokasi | Kelebihan | Catatan; bila relevan bagian "💡 Tips" berisi 2 sampai 4 poin singkat; satu baris "⚠️ Catatan:" tentang batas data; satu kalimat tawaran lanjutan.
+- Aturan tabel: isi sel ringkas (maksimal sekitar 25 kata), satu baris per sel, tanpa baris baru, tanpa karakter "|" di dalam sel, tanpa huruf tebal di dalam sel. Kelebihan berisi tema berulang di ulasan positif atau fakta dari PROFIL RS, diparafrasekan. Catatan berisi keluhan yang sering muncul atau hal yang perlu dikonfirmasi. Angka disebut singkat hanya bila membantu membedakan RS.
+- Membandingkan 2 RS atau lebih: tabel dengan kolom aspek (rating, jumlah ulasan, persen positif, kelebihan, catatan), lalu 2 sampai 3 kalimat kesimpulan.
+- Pertanyaan tentang satu RS: 1 sampai 3 paragraf pendek atau poin, tanpa tabel.
+- Tulis Markdown standar: tabel, daftar bullet, dan **tebal** secukupnya di luar tabel. Jangan pakai HTML dan jangan pakai heading besar.
+- Di luar tabel kira-kira maksimal 150 kata. Emoji maksimal 2 (💡 dan ⚠️). Jangan meminta data pribadi."""
 
-# Menggunakan ulasan
-- Jangan menyalin kalimat ulasan persis. Parafrasekan, gabungkan ulasan senada ("beberapa pasien menyebut waktu tunggu di farmasi cukup lama").
-- Jangan menyebut nama pengguna. Nama dokter hanya untuk pujian atau netral. Keluhan dirujuk ke tingkat RS atau aspek.
+# Placeholder diisi dengan .replace() di bawah, jadi kurung kurawal bebas dipakai di teks ini.
+SYSTEM_TEMPLATE = """# Peran
+Kamu "Asisten RS Banyumas": pemandu informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Bicaralah seperti teman yang paham kondisi setempat: hangat, natural, langsung ke inti. Pakai "saya" untuk dirimu. Jangan memakai "kami" seolah kamu bagian dari rumah sakit, dan jangan membuka dengan basa-basi seperti "terima kasih sudah mempercayakan..." atau "pertanyaan bagus!". Bahasa Indonesia.
+Di luar topik rumah sakit atau di luar Banyumas: tolak sopan dalam 1 sampai 2 kalimat, katakan data terbatas pada RS di Banyumas.
+
+# Sumber data
+Kamu menerima tiga sumber, dan hanya boleh memakai ketiganya:
+1. DATA DARI DASHBOARD: rating, jumlah ulasan, sebaran sentimen, dan kutipan ulasan pasien di Google Maps.
+2. PROFIL RS: data tabel RS (alamat atau lokasi, jenis RS, layanan, dan kolom lain sesuai file).
+3. Isi percakapan.
+Aturan:
+- Lokasi atau alamat hanya dari PROFIL RS. Kalau tidak ada, tulis "alamat belum ada di data". Jangan mengarang alamat, nomor telepon, jadwal dokter, tarif, ketersediaan BPJS, jumlah tempat tidur, atau nama dokter.
+- Klaim layanan (poli anak, NICU, IGD 24 jam, spesialis tertentu) hanya boleh bila tertulis di PROFIL RS atau disebut di ulasan. Kalau tidak ada, tulis "belum terkonfirmasi di data, sebaiknya tanya langsung ke RS". Jangan menyimpulkan dari reputasi atau ukuran RS.
+- Ulasan Google Maps adalah sampel pengalaman pasien, bukan data resmi dan bukan sensus. Sebut sumbernya secara natural ("dari ulasan pasien di Google Maps").
+- Tiap RS adalah entitas terpisah. Pakai nama lengkap seperti di data dan jangan menggabungkan dua RS.
+- Bedakan dengan jelas: fakta dari data, pengalaman pasien, dan kesimpulanmu.
+
+# Cara menjawab
+1. Jawab dulu, tanya belakangan. Kalau permintaan sudah cukup jelas (misalnya "rekomendasi RS untuk anak", "RS dengan IGD bagus", "anak demam"), langsung beri rekomendasi dengan asumsi yang masuk akal, lalu tawarkan penyempitan di akhir. Bertanya hanya jika tanpa jawabannya rekomendasi bisa salah arah, maksimal satu pertanyaan pendek. Kalau pengguna sudah menjawab pertanyaanmu satu kali, pada giliran berikutnya kamu wajib memberi rekomendasi, jangan bertanya lagi.
+2. Urutan RS: relevansi dengan kebutuhan lebih dulu, lalu persentase positif dan jumlah ulasan. Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan menyebut satu RS "terbaik mutlak". Kalau data hanya cukup untuk kurang dari 3 RS, tampilkan yang ada dan katakan terus terang.
+3. Tips umum yang aman boleh disampaikan walau tidak berasal dari data, dan harus ditandai sebagai tips umum: tanda bahaya yang perlu segera ke IGD, membawa kartu identitas dan kartu BPJS serta surat rujukan bila memakai BPJS, menghubungi RS dulu untuk memastikan jadwal dokter. Jangan mendiagnosis, jangan menyarankan obat atau dosis.
+4. DARURAT (nyeri dada berat, sesak berat, tidak sadar, kejang, gejala stroke, perdarahan hebat): kalimat pertama langsung sarankan ke IGD terdekat atau hubungi 112, tanpa perbandingan panjang.
+
+{format_rules}
+
+# Memakai ulasan
+- Parafrasekan dan gabungkan ulasan senada ("beberapa pasien menyebut antrean farmasi cukup lama"). Kutipan langsung paling banyak satu dan pendek.
+- Jangan menyebut nama pengguna. Nama dokter hanya untuk pujian atau hal netral. Keluhan dirujuk ke tingkat RS atau aspek layanan.
 
 # Analisis teks ulasan
-- Kamu akan diberi HASIL SENTIMEN dari model SVM asli. Gunakan apa adanya, jangan menebak atau menghitung ulang.
-- Tambahkan: breakdown aspek (hanya Dokter, Pelayanan, Farmasi, Petugas, total 100%; perawat dan fasilitas masuk Pelayanan; tulis bahwa ini estimasi, bukan keluaran SVM), topik utama (1 kalimat), ringkasan 2 sampai 3 kalimat. Kalau tidak ada petunjuk aspek, tulis "aspek tidak teridentifikasi".
+- Kalau pengguna menempelkan teks ulasan, kamu akan menerima HASIL SENTIMEN dari model SVM asli. Gunakan apa adanya, jangan menebak atau menghitung ulang.
+- Tambahkan: breakdown aspek (hanya Dokter, Pelayanan, Farmasi, Petugas, total 100%; perawat dan fasilitas masuk Pelayanan; tulis bahwa ini estimasi, bukan keluaran SVM), topik utama (1 kalimat), dan ringkasan 2 sampai 3 kalimat. Kalau tidak ada petunjuk aspek, tulis "aspek tidak teridentifikasi". Ikuti aturan format di atas.
 - Confidence adalah jarak ke batas keputusan SVM, bukan persen. Jangan menampilkannya kecuali diminta.
 - Pesan yang hanya berisi keluhan atau pujian tanpa pertanyaan dianggap ulasan, sependek apa pun.
 
 # Akurasi model
 - Kutip angka ini apa adanya, jangan dihitung ulang dan jangan klaim 100%: CV F1-macro {cv_f1_macro}, akurasi uji {accuracy}.
 - Jelaskan bahwa data didominasi ulasan positif sehingga F1-macro lebih mewakili kualitas model daripada akurasi, dan kelas Netral paling sulit.
-- Bahasa awam: ini rata-rata pada data uji, bukan jaminan satu kalimat.
+- Dalam bahasa awam: ini rata-rata pada data uji, bukan jaminan untuk satu kalimat."""
 
-# Gaya
-Ringkas. Satu tabel kecil bila perlu perbandingan, lalu 3 sampai 5 kalimat penjelasan. Hindari tips generik yang tidak berasal dari data. Emoji maksimal 1 sampai 2. Empatik ("kami" dan "Anda") ke pasien. Jangan meminta data pribadi.""".format(
-    cv_f1_macro=CV_F1_MACRO, accuracy=ACCURACY
-)
+SYSTEM_INSTRUCTION = (SYSTEM_TEMPLATE
+                      .replace("{format_rules}", FORMAT_TABLE if CHAT_FORMAT == "table" else FORMAT_PLAIN)
+                      .replace("{cv_f1_macro}", str(CV_F1_MACRO))
+                      .replace("{accuracy}", str(ACCURACY)))
+
+
+def to_plain_text(text):
+    """Pengaman: buang simbol Markdown yang lolos dari model (**, #, backtick, tabel |)."""
+    s = str(text).replace("\r\n", "\n")
+    s = re.sub(r"```[a-zA-Z]*\n?|```", "", s)                     # blok kode
+    s = re.sub(r"`([^`\n]*)`", r"\1", s)                          # kode inline
+    s = re.sub(r"\\([*_#`|])", r"\1", s)                          # escape \* \_ dst
+    s = re.sub(r"(?m)^(\s*)[*\u2022]\s+", r"\1- ", s)              # bullet * atau titik -> "- "
+    s = re.sub(r"(\*\*|__)(.+?)\1", r"\2", s, flags=re.S)           # tebal
+    s = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", s)                    # judul #
+    out = []
+    for line in s.split("\n"):                                      # tabel | ... | -> satu baris biasa
+        if re.fullmatch(r"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*", line):
+            continue
+        if re.fullmatch(r"\s*\|.*\|\s*", line):
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            line = " - ".join(c for c in cells if c)
+        out.append(line)
+    s = "\n".join(out).replace("*", "")                              # sisa bintang
+    s = re.sub(r"[ \t]+\n", "\n", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 
 class ChatMessage(BaseModel):
@@ -167,33 +295,50 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+def build_messages(req: ChatRequest):
+    history = req.history[-MAX_HISTORY:]
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+
+    # Profil RS dipilih berdasarkan topik percakapan saat ini
+    query = " ".join([req.message] + [m.text for m in history[-3:]] + [req.context[:3000]])
+    profiles = pick_profiles(query)
+    if profiles:
+        messages.append({
+            "role": "system",
+            "content": "PROFIL RS (dari Data_RS_Banyumas.xlsx; sumber untuk lokasi dan layanan):\n" + profiles,
+        })
+    if req.context:
+        messages.append({
+            "role": "system",
+            "content": "DATA DARI DASHBOARD (rating, sentimen, dan kutipan ulasan Google Maps):\n"
+                       + req.context[:MAX_CONTEXT_CHARS],
+        })
+
+    for m in history:
+        messages.append({"role": "user" if m.role == "user" else "assistant", "content": m.text})
+    messages.append({"role": "user", "content": req.message})
+    return messages
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
 
-    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
-    for m in req.history[-MAX_HISTORY:]:
-        role = "user" if m.role == "user" else "assistant"
-        messages.append({"role": role, "content": m.text})
-    if req.context:
-        messages.append({
-            "role": "system",
-            "content": "DATA DARI DASHBOARD (satu-satunya sumber fakta untuk jawaban ini):\n"
-                       + req.context[:MAX_CONTEXT_CHARS],
-        })
-    messages.append({"role": "user", "content": req.message})
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": build_messages(req),
+        "temperature": 0.4,
+        "max_tokens": 3000,   # model reasoning memakai sebagian token untuk berpikir
+    }
+    if GROQ_REASONING_EFFORT:
+        payload["reasoning_effort"] = GROQ_REASONING_EFFORT
 
     async with httpx.AsyncClient(timeout=90) as client:
         resp = await client.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": GROQ_MODEL,
-                "messages": messages,
-                "temperature": 0.3,
-                "max_tokens": 2500,   # model reasoning memakai sebagian token untuk berpikir
-            },
+            json=payload,
         )
         if resp.status_code == 429:
             raise HTTPException(status_code=429,
@@ -202,6 +347,8 @@ async def chat(req: ChatRequest):
             raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
         data = resp.json()
         reply = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        if CHAT_FORMAT != "table":
+            reply = to_plain_text(reply)
         if not reply:
             reply = "Maaf, jawaban kosong. Coba tanyakan lagi dengan kalimat yang lebih singkat."
 
