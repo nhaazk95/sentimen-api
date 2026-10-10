@@ -56,10 +56,9 @@ app = FastAPI()
 # Default "*". Untuk mempersempit, set di Render -> Environment:
 #   ALLOWED_ORIGINS=https://nhaazk95.github.io
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
-    GZipMiddleware, 
-    minimum_size=1000,
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -396,10 +395,7 @@ async def agent_run(background: BackgroundTasks, x_agent_token: str = Header(def
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
     if ops_running():
         raise HTTPException(status_code=409, detail="agen sedang berjalan")
-    base = {"model": GROQ_MODEL, "temperature": 0.2, "max_tokens": 3000}
-    if GROQ_REASONING_EFFORT:
-        base["reasoning_effort"] = GROQ_REASONING_EFFORT
-    background.add_task(run_routine, OPS, GROQ_URL, GROQ_API_KEY, base)
+    background.add_task(run_routine, OPS, GROQ_URL, GROQ_API_KEY, _ops_payload())
     return {"status": "dimulai"}
 
 
