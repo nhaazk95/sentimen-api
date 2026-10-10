@@ -6,12 +6,10 @@ Pakai (file lokal atau URL):
     DATABASE_URL=postgresql://... python seed_from_reviews_json.py reviews.json
     DATABASE_URL=postgresql://... python seed_from_reviews_json.py https://.../data/reviews.json
 
-Juga membuatkan kerangka places.json (nama RS, alamat, koordinat) dari data yang sama.
-Kamu tinggal mengisi "place_id" tiap RS.
+Koreksi manual lama (kolom Label_Manual) ikut diimpor sebagai label manusia, sehingga dipakai untuk retrain.
 """
 import hashlib
 import json
-import os
 import sys
 import urllib.request
 
@@ -53,9 +51,11 @@ def main(src):
             "published_at": r.get("Waktu Ulasan"), "address": r.get("Lokasi Tempat"),
             "lat": num(r.get("Latitude")), "lon": num(r.get("Longitude")), "text": txt,
             "label": r.get("Sentimen_Prediksi"), "confidence": num(r.get("Confidence")),
+            "corrected_label": r.get("Label_Manual") or None,
+            "label_source": "manusia" if r.get("Label_Manual") else None,
             "processed_at": r.get("Processed_At"), "clean": r.get("Teks_Bersih"),
             "scraped_at": _now(),
-            "notified": 1,    # ulasan lama dianggap sudah diketahui: jangan diemailkan massal
+            "notified": 0 if r.get("Notified") is False else 1,   # hormati status email yang belum terkirim
             "legacy": 1,
         })
 
@@ -67,19 +67,6 @@ def main(src):
         for i in range(0, len(new), 500):
             c.execute(insert(reviews), new[i:i + 500])
     print(f"Selesai: {len(new)} ulasan diimpor ({len(rows) - len(new)} sudah ada).")
-
-    # kerangka places.json
-    places = {}
-    for r in rows:
-        places.setdefault(r["rs_name"], {"name": r["rs_name"], "place_id": "", "address": r["address"],
-                                         "lat": r["lat"], "lon": r["lon"]})
-    path = os.environ.get("PLACES_FILE", "places.json")
-    if os.path.exists(path):
-        print(f"{path} sudah ada, tidak ditimpa.")
-    else:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(list(places.values()), f, ensure_ascii=False, indent=2)
-        print(f"{path} dibuat untuk {len(places)} RS. Isi kolom place_id tiap RS.")
 
 
 if __name__ == "__main__":
