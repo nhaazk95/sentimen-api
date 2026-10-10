@@ -1,3 +1,18 @@
+"""
+ops_agent.py -- agen operasional Geosentimen RS Banyumas (tanpa GitHub Actions).
+
+Satu agen LLM (Groq, tool calling) menjalankan rutinitas:
+  ambil ulasan baru (Apify) -> label SVM -> simpan ke database -> email ulasan negatif
+  -> label ulasan yang ragu -> retrain model bila layak.
+
+Pembagian tugas:
+  - LLM memutuskan URUTAN langkah dan menulis ringkasan/usulan label.
+  - KODE menjaga hal yang tidak boleh salah: dedup ulasan, penerima email, tanda "sudah dikirim",
+    dan gerbang evaluasi retrain (model baru dipakai hanya bila lolos test set tetap).
+
+Penyimpanan: database lewat DATABASE_URL (SQLite untuk uji lokal, Postgres untuk Render/Neon/Supabase).
+Model hasil retrain disimpan di database juga, karena disk Render gratis hilang saat restart.
+"""
 import asyncio
 import io
 import json
@@ -23,7 +38,8 @@ APIFY_ACTOR = os.environ.get("APIFY_ACTOR", "compass/google-maps-reviews-scraper
 APIFY_INPUT_BASE = {"reviewsSort": "newest", "language": "id", "reviewsOrigin": "google"}
 TRAIN_POOL = os.environ.get("TRAIN_POOL", "data/training/train_pool.csv")
 TEST_SET = os.environ.get("TEST_SET", "data/training/test_set.csv")   # label manusia, TIDAK pernah ikut dilatih
-TEXT_COL = os.environ.get("TEXT_COL", "clean_text")
+TEXT_COL = os.environ.get("TEXT_COL", "clean_text")      # kolom teks yang sudah dibersihkan (dipakai bila ada)
+RAW_TEXT_COL = os.environ.get("RAW_TEXT_COL", "text")    # kolom teks mentah (dibersihkan dengan preprocess saat retrain)
 LABEL_COL = os.environ.get("LABEL_COL", "label")
 MIN_NEW_CORRECTIONS = int(os.environ.get("MIN_NEW_CORRECTIONS", "30"))
 MIN_F1_GAIN = float(os.environ.get("MIN_F1_GAIN", "0.0"))
@@ -362,6 +378,24 @@ class OpsTools:
         return {"tersimpan": n}
 
     # ---- 6. retrain dengan gerbang evaluasi
+    def _read_labeled(self, path):
+        """Baca CSV berlabel -> DataFrame[TEXT_COL, LABEL_COL] berisi teks BERSIH.
+        Urutan: file *_clean.csv (hasil prepare_training_data.py) > kolom clean_text > kolom text mentah
+        yang dibersihkan dengan preprocess() yang sama dengan yang dipakai /predict."""
+        import pandas as pd
+        clean_path = path[:-4] + "_clean.csv" if path.endswith(".csv") else path
+        src = clean_path if os.path.exists(clean_path) else path
+        df = pd.read_csv(src)
+        if TEXT_COL in df.columns:
+            txt = df[TEXT_COL].astype(str)
+        elif RAW_TEXT_COL in df.columns:
+            txt = df[RAW_TEXT_COL].astype(str).map(self.preprocess)
+        else:
+            raise ValueError(f"{src}: butuh kolom '{TEXT_COL}' atau '{RAW_TEXT_COL}', ada {list(df.columns)}")
+        out = pd.DataFrame({TEXT_COL: txt, LABEL_COL: df[LABEL_COL]}).dropna()
+        out = out[out[TEXT_COL].str.strip().ne("") & out[TEXT_COL].ne("nan")]
+        return out.reset_index(drop=True)
+
     def retrain_model(self):
         import pandas as pd
         from sklearn.feature_extraction.text import TfidfVectorizer
@@ -384,8 +418,8 @@ class OpsTools:
         canon = {str(c).lower(): str(c) for c in cur_le.classes_}
         norm = lambda s: canon.get(str(s).strip().lower(), str(s).strip())  # noqa: E731
 
-        base = pd.read_csv(TRAIN_POOL)[[TEXT_COL, LABEL_COL]].dropna()
-        test = pd.read_csv(TEST_SET)[[TEXT_COL, LABEL_COL]].dropna()
+        base = self._read_labeled(TRAIN_POOL)
+        test = self._read_labeled(TEST_SET)
         extra = pd.DataFrame({TEXT_COL: [r.clean for r in corr], LABEL_COL: [r.corrected_label for r in corr]})
         train = pd.concat([base, extra], ignore_index=True)
         train[LABEL_COL] = train[LABEL_COL].map(norm)
