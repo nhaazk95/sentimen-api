@@ -751,17 +751,24 @@ def _laporan_otomatis(log):
         f"- {x['alat']}: {x['hasil'][:160]}" for x in log)
 
 
-async def _loop(client, url, headers, base_payload, tools, log):
+async def _llm_phase(client, url, headers, base_payload, tools, log, called):
+    """Putaran agen LLM. Mengembalikan teks laporan (bisa kosong). Boleh melempar error; pemanggil menanganinya."""
     state = await asyncio.to_thread(tools.status_data)      # disuntik ke prompt: hemat satu putaran LLM
     msgs = [{"role": "system", "content": SYSTEM_OPS},
             {"role": "user", "content": f"Jalankan rutinitas sekarang. Waktu server: {_now()}.\n"
                                         f"Keadaan data: {json.dumps(state, ensure_ascii=False, default=str)}"}]
-    called, nudges, cur = set(), 0, dict(base_payload)
+    nudges, tool_fails, cur = 0, 0, dict(base_payload)
     grown = False
     for step in range(MAX_STEPS):
-        payload = dict(cur, messages=msgs, tools=tools.schemas,
-                       tool_choice="none" if step == MAX_STEPS - 1 else "auto")
+        payload = dict(cur, messages=msgs, tools=tools.schemas)
         resp = await _post(client, url, headers, payload)
+        if resp.status_code == 400 and "tool_use_failed" in (resp.text or "") and tool_fails < 2:
+            # Model menulis panggilan alat yang rusak/terpotong (biasanya jatah token habis): ulangi dengan jatah lebih besar
+            tool_fails += 1
+            cur["max_tokens"] = min(int(cur.get("max_tokens", 1500)) * 2, 4000)
+            log.append({"alat": "(llm)", "hasil": f"panggilan alat rusak (tool_use_failed); mengulang, max_tokens={cur['max_tokens']}"})
+            msgs.append({"role": "user", "content": "Panggilan alat sebelumnya rusak. Ulangi dengan nama alat yang lengkap dan benar."})
+            continue
         if resp.status_code != 200:
             raise AgentError(resp.status_code, resp.text)
         choice = resp.json().get("choices", [{}])[0]
@@ -770,9 +777,8 @@ async def _loop(client, url, headers, base_payload, tools, log):
         content = (msg.get("content") or "").strip()
         if not calls:
             if not content and finish == "length" and not grown:
-                # model reasoning menghabiskan seluruh jatah token untuk berpikir: ulangi dengan jatah lebih besar
                 grown = True
-                cur["max_tokens"] = int(cur.get("max_tokens", 1500)) * 2
+                cur["max_tokens"] = min(int(cur.get("max_tokens", 1500)) * 2, 4000)
                 log.append({"alat": "(llm)", "hasil": f"respons kosong karena token habis, max_tokens jadi {cur['max_tokens']}"})
                 continue
             miss = await _kurang(tools, called)
@@ -785,8 +791,7 @@ async def _loop(client, url, headers, base_payload, tools, log):
                                                         + ", ".join(miss) + ". kirim_email_negatif butuh argumen "
                                                         "ringkasan berisi 1-3 kalimat."})
                 continue
-            await _selesaikan_dengan_kode(tools, called, log, client, url, headers, base_payload)
-            return content or _laporan_otomatis(log)
+            return content
         msgs.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
         for c in calls:
             fn = c.get("function", {})
@@ -798,7 +803,21 @@ async def _loop(client, url, headers, base_payload, tools, log):
             called.add(fn.get("name"))
             print(f"[ops] {fn.get('name')} -> {str(result)[:150]}", flush=True)
             log.append({"alat": fn.get("name"), "hasil": str(result)[:300]})
-            msgs.append({"role": "tool", "tool_call_id": c.get("id"),
+            msgs.append({"role": "tool", "tool_call_id": c.get("id"), "name": fn.get("name"),
                          "content": json.dumps(result, ensure_ascii=False, default=str)[:TOOL_RESULT_CHARS]})
+    return "(batas langkah tercapai)"
+
+
+async def _loop(client, url, headers, base_payload, tools, log):
+    """Fase LLM + jaring pengaman. Langkah penting SELALU diselesaikan, bahkan bila LLM error atau kena batas."""
+    called, report, llm_error = set(), "", ""
+    try:
+        report = await _llm_phase(client, url, headers, base_payload, tools, log, called)
+    except Exception as e:
+        llm_error = f"{type(e).__name__}: {str(e)[:200]}"
+        log.append({"alat": "(llm)", "hasil": f"error, dilanjutkan oleh sistem: {llm_error}"})
+        print(f"[ops] LLM error, sistem melanjutkan: {llm_error}", flush=True)
     await _selesaikan_dengan_kode(tools, called, log, client, url, headers, base_payload)
-    return "(batas langkah tercapai)\n" + _laporan_otomatis(log)
+    if llm_error:
+        return f"(Agen LLM terhenti: {llm_error}. Langkah penting dijalankan oleh sistem.)\n" + _laporan_otomatis(log)
+    return report or _laporan_otomatis(log)
