@@ -635,21 +635,72 @@ async def run_routine(tools, url, api_key, base_payload, http_client=None):
         return run_id
 
 
+WAJIB = ["ambil_ulasan_baru", "kirim_email_negatif", "retrain_model"]
+
+
+async def _kurang(tools, called):
+    """Langkah wajib yang belum dikerjakan agen. Email hanya wajib bila memang ada negatif yang menunggu."""
+    miss = []
+    if "ambil_ulasan_baru" not in called:
+        miss.append("ambil_ulasan_baru")
+    if "kirim_email_negatif" not in called:
+        st = await asyncio.to_thread(tools.status_data)
+        if st.get("negatif_belum_diemail", 0) > 0:
+            miss.append("kirim_email_negatif")
+    if "retrain_model" not in called:
+        miss.append("retrain_model")
+    return miss
+
+
+async def _selesaikan_dengan_kode(tools, called, log):
+    """Jaring pengaman: langkah wajib yang dilewati LLM dikerjakan langsung oleh kode (email tidak boleh tergantung LLM)."""
+    for name in await _kurang(tools, called):
+        result = await asyncio.to_thread(tools.call, name, {})
+        called.add(name)
+        print(f"[ops] (otomatis) {name} -> {str(result)[:150]}", flush=True)
+        log.append({"alat": f"{name} (otomatis oleh sistem)", "hasil": str(result)[:300]})
+
+
+def _laporan_otomatis(log):
+    return "Laporan otomatis (agen tidak menulis laporan):\n" + "\n".join(
+        f"- {x['alat']}: {x['hasil'][:160]}" for x in log)
+
+
 async def _loop(client, url, headers, base_payload, tools, log):
     state = await asyncio.to_thread(tools.status_data)      # disuntik ke prompt: hemat satu putaran LLM
     msgs = [{"role": "system", "content": SYSTEM_OPS},
             {"role": "user", "content": f"Jalankan rutinitas sekarang. Waktu server: {_now()}.\n"
                                         f"Keadaan data: {json.dumps(state, ensure_ascii=False, default=str)}"}]
+    called, nudges, cur = set(), 0, dict(base_payload)
+    grown = False
     for step in range(MAX_STEPS):
-        payload = dict(base_payload, messages=msgs, tools=tools.schemas,
+        payload = dict(cur, messages=msgs, tools=tools.schemas,
                        tool_choice="none" if step == MAX_STEPS - 1 else "auto")
         resp = await _post(client, url, headers, payload)
         if resp.status_code != 200:
             raise AgentError(resp.status_code, resp.text)
-        msg = resp.json().get("choices", [{}])[0].get("message", {})
+        choice = resp.json().get("choices", [{}])[0]
+        msg, finish = choice.get("message", {}), choice.get("finish_reason")
         calls = msg.get("tool_calls") or []
+        content = (msg.get("content") or "").strip()
         if not calls:
-            return (msg.get("content") or "").strip() or "(agen tidak menulis laporan)"
+            if not content and finish == "length" and not grown:
+                # model reasoning menghabiskan seluruh jatah token untuk berpikir: ulangi dengan jatah lebih besar
+                grown = True
+                cur["max_tokens"] = int(cur.get("max_tokens", 1500)) * 2
+                log.append({"alat": "(llm)", "hasil": f"respons kosong karena token habis, max_tokens jadi {cur['max_tokens']}"})
+                continue
+            miss = await _kurang(tools, called)
+            if miss and nudges < 2:
+                nudges += 1
+                log.append({"alat": "(llm)", "hasil": f"berhenti sebelum selesai (finish={finish}); diingatkan: {miss}"})
+                if content:
+                    msgs.append({"role": "assistant", "content": content})
+                msgs.append({"role": "user", "content": "Rutinitas belum selesai. Lanjutkan dengan memanggil alat: "
+                                                        + ", ".join(miss) + "."})
+                continue
+            await _selesaikan_dengan_kode(tools, called, log)
+            return content or _laporan_otomatis(log)
         msgs.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
         for c in calls:
             fn = c.get("function", {})
@@ -658,8 +709,10 @@ async def _loop(client, url, headers, base_payload, tools, log):
             except json.JSONDecodeError:
                 args = {}
             result = await asyncio.to_thread(tools.call, fn.get("name"), args)
+            called.add(fn.get("name"))
             print(f"[ops] {fn.get('name')} -> {str(result)[:150]}", flush=True)
             log.append({"alat": fn.get("name"), "hasil": str(result)[:300]})
             msgs.append({"role": "tool", "tool_call_id": c.get("id"),
                          "content": json.dumps(result, ensure_ascii=False, default=str)[:TOOL_RESULT_CHARS]})
-    return "(batas langkah tercapai)"
+    await _selesaikan_dengan_kode(tools, called, log)
+    return "(batas langkah tercapai)\n" + _laporan_otomatis(log)
