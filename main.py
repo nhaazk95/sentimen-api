@@ -14,13 +14,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
-
+from fastapi.middleware.gzip import GZipMiddleware
 from preprocessing import full_preprocess, load_slang_dict  
 import hmac
 from fastapi import BackgroundTasks, Header
 from sqlalchemy import select
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
-                       run_routine, ops_running, agent_runs)
+                       run_routine, ops_running, agent_runs, last_run_info)
 from agent import HospitalTools, run_agent, AgentError, AGENT_RULES
 
 # Pipeline utuh (TF-IDF + SVM) -- satu file
@@ -58,6 +58,8 @@ app = FastAPI()
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
+    GZipMiddleware, 
+    minimum_size=1000,
     allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -746,68 +748,40 @@ async def saran(req: SaranRequest):
 
 
 # ============================================================
-# Endpoint /refresh -- memicu workflow GitHub (update-data.yml) dari tombol dashboard.
-# Token GitHub hanya ada di environment variable Render (GH_DISPATCH_TOKEN),
-# fine-grained token dengan izin "Actions: Read and write" untuk repo ini saja.
+# Endpoint /refresh -- tombol "Ambil Ulasan Terbaru" di dashboard menjalankan agen.
+# Publik, jadi dibatasi jeda antar-run supaya kredit Apify tidak habis oleh klik berulang.
 # ============================================================
-GH_TOKEN = os.environ.get("GH_DISPATCH_TOKEN")
-GH_REPO = os.environ.get("GH_REPO", "nhaazk95/dashboard-rs-banyumas")
-GH_WORKFLOW = os.environ.get("GH_WORKFLOW_FILE", "update-data.yml")
-REFRESH_COOLDOWN_SEC = 900      # maksimal 1 kali per 15 menit untuk semua pengunjung
+REFRESH_COOLDOWN_SEC = int(os.environ.get("REFRESH_COOLDOWN_SEC", "3600"))
 _last_refresh = 0.0
 
 
-def _gh_headers():
-    return {
-        "Authorization": f"Bearer {GH_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
+def _ops_payload():
+    base = {"model": os.environ.get("OPS_MODEL", GROQ_MODEL), "temperature": 0.2, "max_tokens": 1500}
+    effort = os.environ.get("OPS_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
+    if effort:
+        base["reasoning_effort"] = effort
+    return base
 
 
 @app.post("/refresh")
-async def refresh():
+async def refresh(background: BackgroundTasks):
     global _last_refresh
-    if not GH_TOKEN:
-        raise HTTPException(status_code=500, detail="GH_DISPATCH_TOKEN belum diset di server")
-
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
+    if ops_running():
+        raise HTTPException(status_code=409, detail="Update sedang berjalan. Tunggu beberapa menit.")
     sisa = REFRESH_COOLDOWN_SEC - (time.time() - _last_refresh)
     if sisa > 0:
         raise HTTPException(status_code=429,
                             detail=f"Update baru saja dijalankan. Coba lagi sekitar {int(sisa // 60) + 1} menit lagi.")
-
-    # Pasang cooldown sebelum memanggil GitHub, supaya dua klik bersamaan tidak lolos keduanya
-    sebelumnya = _last_refresh
     _last_refresh = time.time()
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                f"https://api.github.com/repos/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/dispatches",
-                headers=_gh_headers(), json={"ref": "main"})
-    except httpx.HTTPError as e:
-        _last_refresh = sebelumnya
-        raise HTTPException(status_code=502, detail=f"Gagal menghubungi GitHub: {e}")
-
-    if r.status_code != 204:
-        _last_refresh = sebelumnya
-        raise HTTPException(status_code=502, detail=f"GitHub API error: {r.status_code}")
+    background.add_task(run_routine, OPS, GROQ_URL, GROQ_API_KEY, _ops_payload())
     return {"status": "dimulai"}
 
 
 @app.get("/refresh/status")
-async def refresh_status():
-    if not GH_TOKEN:
-        raise HTTPException(status_code=500, detail="GH_DISPATCH_TOKEN belum diset di server")
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(
-            f"https://api.github.com/repos/{GH_REPO}/actions/workflows/{GH_WORKFLOW}/runs",
-            headers=_gh_headers(), params={"per_page": 1, "event": "workflow_dispatch"})
-    runs = r.json().get("workflow_runs", []) if r.status_code == 200 else []
-    if not runs:
-        return {"status": "unknown"}
-    return {"status": runs[0]["status"], "conclusion": runs[0]["conclusion"],
-            "created_at": runs[0]["created_at"]}
-
+def refresh_status():
+    return last_run_info(ENGINE)
 
 def custom_openapi():
     if app.openapi_schema:

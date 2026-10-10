@@ -128,6 +128,21 @@ def load_active_model(engine):
     return obj["pipeline"], obj["label_encoder"], json.loads(row.metrics)
 
 
+def last_run_info(engine):
+    """Ringkasan run agen terakhir untuk dashboard (publik, tanpa log atau laporan). Bentuknya meniru status
+    workflow GitHub agar JavaScript dashboard hampir tidak berubah."""
+    with engine.connect() as c:
+        r = c.execute(select(agent_runs.c.status, agent_runs.c.started_at)
+                      .order_by(agent_runs.c.started_at.desc()).limit(1)).first()
+        ok = c.execute(select(agent_runs.c.finished_at).where(agent_runs.c.status == "ok")
+                       .order_by(agent_runs.c.finished_at.desc()).limit(1)).scalar()
+    if not r:
+        return {"status": "unknown", "conclusion": None, "created_at": None, "last_run_utc": ok}
+    return {"status": "in_progress" if r.status == "running" else "completed",
+            "conclusion": None if r.status == "running" else ("success" if r.status == "ok" else "failure"),
+            "created_at": r.started_at, "last_run_utc": ok}
+
+
 def export_reviews(engine):
     """Isi GET /reviews.json: kolom dan namanya sama persis dengan docs/data/reviews.json yang dibaca dashboard."""
     with engine.connect() as c:
