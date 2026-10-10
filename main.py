@@ -644,10 +644,11 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
 
     fmt = resolve_format(req.format)
-    base = {"model": os.environ.get("OPS_MODEL", GROQ_MODEL), "temperature": 0.2, "max_tokens": 1500}
+    base = {"model": os.environ.get("OPS_MODEL", GROQ_MODEL),
+            "temperature": 0.2, "max_tokens": 2000}
     effort = os.environ.get("OPS_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
     if effort:
-       base["reasoning_effort"] = effort
+        base["reasoning_effort"] = effort
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     latlng = (req.lat, req.lng) if req.lat is not None and req.lng is not None else None
 
