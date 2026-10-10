@@ -15,7 +15,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel
 
-from preprocessing import full_preprocess, load_slang_dict  # modul bersama
+from preprocessing import full_preprocess, load_slang_dict  
+import hmac
+from fastapi import BackgroundTasks, Header
+from sqlalchemy import select
+from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
+                       run_routine, ops_running, agent_runs)
+from agent import HospitalTools, run_agent, AgentError, AGENT_RULES
 
 # Pipeline utuh (TF-IDF + SVM) -- satu file
 pipeline = joblib.load('svm_pipeline.pkl')
@@ -25,6 +31,13 @@ slang_dict = load_slang_dict('slang_dict.json')
 # Metrics dibaca dari file supaya otomatis ter-update saat retraining
 with open('metrics.json', encoding='utf-8') as f:
     _metrics = json.load(f)
+
+ENGINE = make_engine()
+init_db(ENGINE)
+_db_model = load_active_model(ENGINE)
+if _db_model:                       # model hasil retrain menggantikan file .pkl dari repo
+    pipeline, label_encoder, _metrics = _db_model
+    print("[ops] memakai model dari database", flush=True)
 
 ACCURACY = _metrics['accuracy']
 PRECISION_MACRO = _metrics['precision_macro']
@@ -203,7 +216,7 @@ def _load_rs_data(path):
             txt = re.sub(r"\s+", " ", str(r[c_text])).strip()
             tok = set(str(r[c_clean]).split())
             if len(txt) >= 25 and tok:                       # username sengaja tidak dibawa
-                reviews.append({"rs": nama, "rating": rt, "text": txt, "tok": tok})
+                reviews.append({"rs": nama, "rating": rt, "text": txt, "tok": tok, "clean": str(r[c_clean])})
 
     hospitals = []
     for nama, h in agg.items():
@@ -343,6 +356,82 @@ def build_rs_blocks(req, query):
     allowed = {h["nama"] for d, h in ranked[:8]} if origin else None
     return profil, _review_block(query, allowed)
 
+AGENT_MODE = os.environ.get("AGENT_MODE", "on").lower() != "off"   # set "off" di Render untuk mematikan
+TOOLS = None
+if AGENT_MODE and RS_HOSPITALS and RS_REVIEWS:
+    TOOLS = HospitalTools(
+        hospitals=RS_HOSPITALS, reviews=RS_REVIEWS, rev_index=_REV_INDEX,
+        preprocess=preprocess, pipeline=pipeline, label_encoder=label_encoder,
+        stop=_STOP, find_origin=find_origin, haversine=_haversine,
+    )
+    print(f"[agent] aktif: {len(RS_HOSPITALS)} RS, {len(RS_REVIEWS)} ulasan berlabel", flush=True)
+def _deploy_model(pipe, le, metrics):
+    global pipeline, label_encoder, ACCURACY, PRECISION_MACRO, RECALL_MACRO, F1_MACRO, CV_F1_MACRO
+    pipeline, label_encoder = pipe, le
+    ACCURACY, PRECISION_MACRO = metrics["accuracy"], metrics["precision_macro"]
+    RECALL_MACRO, F1_MACRO, CV_F1_MACRO = metrics["recall_macro"], metrics["f1_macro"], metrics["cv_f1_macro"]
+
+
+def _current_model():
+    return pipeline, label_encoder, {"accuracy": ACCURACY, "precision_macro": PRECISION_MACRO,
+                                     "recall_macro": RECALL_MACRO, "f1_macro": F1_MACRO,
+                                     "cv_f1_macro": CV_F1_MACRO}
+
+
+OPS = OpsTools(ENGINE, preprocess, _current_model, _deploy_model)
+AGENT_RUN_TOKEN = os.environ.get("AGENT_RUN_TOKEN")
+
+
+def _need_token(tok):
+    if not AGENT_RUN_TOKEN or not hmac.compare_digest((tok or "").encode(), AGENT_RUN_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="token salah")
+
+
+@app.post("/agent/run", status_code=202)
+async def agent_run(background: BackgroundTasks, x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
+    if ops_running():
+        raise HTTPException(status_code=409, detail="agen sedang berjalan")
+    base = {"model": GROQ_MODEL, "temperature": 0.2, "max_tokens": 3000}
+    if GROQ_REASONING_EFFORT:
+        base["reasoning_effort"] = GROQ_REASONING_EFFORT
+    background.add_task(run_routine, OPS, GROQ_URL, GROQ_API_KEY, base)
+    return {"status": "dimulai"}
+
+
+@app.get("/agent/status")
+def agent_status(x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    with ENGINE.connect() as c:
+        runs = c.execute(select(agent_runs).order_by(agent_runs.c.started_at.desc()).limit(5)).mappings().all()
+    return {"berjalan": ops_running(), "run_terakhir": [dict(r) for r in runs], "data": OPS.status_data()}
+
+
+@app.get("/reviews.json")          # sumber data dashboard (publik, tanpa nama pengguna)
+def reviews_json():
+    return export_reviews(ENGINE)
+
+
+@app.get("/agent/ragu")            # antrean ulasan yang confidence-nya rendah, untuk dicek manusia bila mau
+def agent_ragu(batas: int = 20, x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    return OPS.lihat_ulasan_ragu(batas)
+
+
+class KoreksiInput(BaseModel):
+    review_id: str
+    label: str
+
+
+@app.post("/koreksi")              # koreksi manusia; selalu menang atas label agen
+def koreksi(data: KoreksiInput, x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    r = OPS.simpan_koreksi_manusia(data.review_id, data.label)
+    if "error" in r:
+        raise HTTPException(status_code=400, detail=r["error"])
+    return r
 
 # ============================================================
 # Endpoint /chat -- proxy ke Groq, API key hanya ada di
@@ -516,29 +605,32 @@ def _bersihkan(text):
     return out or (text or "")
 
 
-def build_messages(req: ChatRequest):
+def build_messages(req: ChatRequest, agent: bool = False):
     history = [ChatMessage(role=m.role, text=_bersihkan(m.text)) for m in req.history[-MAX_HISTORY:]]
     message = _bersihkan(req.message)
     context = _bersihkan(req.context) if req.context else ""
     messages = [{"role": "system", "content": system_instruction(resolve_format(req.format))}]
 
-    # Profil RS + kutipan ulasan dari Data_RS_Banyumas.xlsx, dipilih berdasarkan percakapan saat ini
-    user_turns = [m.text for m in history if m.role == "user"][-2:]
-    profil, kutipan = build_rs_blocks(req, " ".join([message] + user_turns))
-    if profil:
-        messages.append({"role": "system", "content": profil})
-    if kutipan:
-        messages.append({
-            "role": "system",
-            "content": "KUTIPAN ULASAN (dari data ulasan Google Maps, dipilih karena relevan dengan pertanyaan; "
-                       "tanpa nama pengguna; parafrasekan, jangan disalin):\n" + kutipan,
-        })
-    if context:
-        messages.append({
-            "role": "system",
-            "content": "DATA DARI DASHBOARD (rating, sentimen, dan kutipan ulasan Google Maps):\n"
-                       + context[:MAX_CONTEXT_CHARS],
-        })
+    if agent:
+        # Mode agen: data diambil model lewat alat, jadi profil/kutipan/context tidak dimasukkan ke prompt
+        messages.append({"role": "system", "content": AGENT_RULES})
+    else:
+        user_turns = [m.text for m in history if m.role == "user"][-2:]
+        profil, kutipan = build_rs_blocks(req, " ".join([message] + user_turns))
+        if profil:
+            messages.append({"role": "system", "content": profil})
+        if kutipan:
+            messages.append({
+                "role": "system",
+                "content": "KUTIPAN ULASAN (dari data ulasan Google Maps, dipilih karena relevan dengan pertanyaan; "
+                           "tanpa nama pengguna; parafrasekan, jangan disalin):\n" + kutipan,
+            })
+        if context:
+            messages.append({
+                "role": "system",
+                "content": "DATA DARI DASHBOARD (rating, sentimen, dan kutipan ulasan Google Maps):\n"
+                           + context[:MAX_CONTEXT_CHARS],
+            })
 
     for m in history:
         messages.append({"role": "user" if m.role == "user" else "assistant", "content": m.text})
@@ -551,32 +643,40 @@ async def chat(req: ChatRequest):
     if not GROQ_API_KEY:
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
 
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": build_messages(req),
-        "temperature": 0.4,
-        "max_tokens": 3000,   # model reasoning memakai sebagian token untuk berpikir
-    }
+    fmt = resolve_format(req.format)
+    base = {"model": GROQ_MODEL, "temperature": 0.4, "max_tokens": 3000}
     if GROQ_REASONING_EFFORT:
-        payload["reasoning_effort"] = GROQ_REASONING_EFFORT
+        base["reasoning_effort"] = GROQ_REASONING_EFFORT
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    latlng = (req.lat, req.lng) if req.lat is not None and req.lng is not None else None
 
+    reply = ""
     async with httpx.AsyncClient(timeout=90) as client:
-        resp = await client.post(
-            GROQ_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-            json=payload,
-        )
-        if resp.status_code == 429:
-            raise HTTPException(status_code=429,
-                                detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
-        if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
-        data = resp.json()
-        reply = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
-        reply = to_plain_text(reply, keep_tables=(resolve_format(req.format) == "rich"))
-        if not reply:
-            reply = "Maaf, jawaban kosong. Coba tanyakan lagi dengan kalimat yang lebih singkat."
+        if TOOLS:
+            try:
+                reply = await run_agent(client, GROQ_URL, headers, base,
+                                        build_messages(req, agent=True), TOOLS, latlng)
+            except AgentError as e:
+                if e.status == 429:
+                    raise HTTPException(status_code=429,
+                                        detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
+                print(f"[agent] gagal, pakai mode lama: {e}", flush=True)
+            except httpx.HTTPError as e:
+                print(f"[agent] error jaringan, pakai mode lama: {e}", flush=True)
 
+        if not reply:   # mode agen mati/gagal -> alur lama (satu panggilan + konteks di prompt)
+            resp = await client.post(GROQ_URL, headers=headers,
+                                     json=dict(base, messages=build_messages(req)))
+            if resp.status_code == 429:
+                raise HTTPException(status_code=429,
+                                    detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
+            reply = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+    reply = to_plain_text(reply, keep_tables=(fmt == "rich"))
+    if not reply:
+        reply = "Maaf, jawaban kosong. Coba tanyakan lagi dengan kalimat yang lebih singkat."
     return ChatResponse(reply=reply)
 
 
