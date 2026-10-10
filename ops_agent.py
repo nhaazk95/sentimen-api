@@ -15,6 +15,7 @@ Model hasil retrain disimpan di database juga, karena disk Render gratis hilang 
 """
 import asyncio
 import hashlib
+import html as _html
 import io
 import json
 import os
@@ -164,19 +165,21 @@ def _smtp_send(user, password, recipients, msg):
         s.send_message(msg, from_addr=user, to_addrs=recipients)
 
 
-def _http_send(provider, recipients, subject, text):
+def _http_send(provider, recipients, subject, text, html=None):
     """Kirim email lewat API HTTPS (port 443). Render gratis memblokir port SMTP 25/465/587 sejak 26 Sep 2025."""
     import httpx
     if provider == "resend":
         r = httpx.post("https://api.resend.com/emails", timeout=30,
                        headers={"Authorization": f"Bearer {os.environ.get('RESEND_API_KEY')}"},
                        json={"from": os.environ.get("EMAIL_FROM") or "Geosentimen <onboarding@resend.dev>",
-                             "to": recipients, "subject": subject, "text": text})
+                             "to": recipients, "subject": subject, "text": text,
+                             **({"html": html} if html else {})})
     elif provider == "brevo":
         r = httpx.post("https://api.brevo.com/v3/smtp/email", timeout=30,
                        headers={"api-key": os.environ.get("BREVO_API_KEY", ""), "accept": "application/json"},
                        json={"sender": {"email": os.environ.get("EMAIL_FROM"), "name": "Geosentimen RS Banyumas"},
-                             "to": [{"email": x} for x in recipients], "subject": subject, "textContent": text})
+                             "to": [{"email": x} for x in recipients], "subject": subject, "textContent": text,
+                             **({"htmlContent": html} if html else {})})
     else:
         raise ValueError(f"provider email tidak dikenal: {provider}")
     if r.status_code >= 300:
@@ -192,6 +195,116 @@ def _email_provider():
     if os.environ.get("BREVO_API_KEY"):
         return "brevo"
     return "smtp"
+
+
+BULAN = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober",
+         "November", "Desember"]
+
+
+def _wib(iso=None):
+    """ISO UTC (atau sekarang) -> datetime WIB (UTC+7) tanpa zona; None bila tidak terbaca."""
+    try:
+        d = datetime.strptime(str(iso)[:19], "%Y-%m-%dT%H:%M:%S") if iso else datetime.utcnow()
+    except ValueError:
+        return None
+    return d + timedelta(hours=7)
+
+
+def _tgl(iso):
+    d = _wib(iso)
+    return f"{d.day} {BULAN[d.month - 1]} {d.year}" if d else "-"
+
+
+def _bintang(rating):
+    try:
+        n = max(0, min(5, int(round(float(rating)))))
+    except (TypeError, ValueError):
+        return "-", "-"
+    return "★" * n + "☆" * (5 - n), f"{n}/5"
+
+
+def _potong(text, n=700):
+    t = str(text or "").replace("\r", "").strip()
+    while "\n\n\n" in t:
+        t = t.replace("\n\n\n", "\n\n")
+    if len(t) <= n:
+        return t
+    return t[:n].rsplit(" ", 1)[0] + " ..."
+
+
+def _susun_email(rows, ringkasan=""):
+    """Kembalikan (subjek, teks, html) untuk email ulasan negatif. Teks ulasan di-escape: itu data pihak luar."""
+    esc = _html.escape
+    by = {}
+    for r in sorted(rows, key=lambda r: str(r.published_at or ""), reverse=True):
+        by.setdefault(r.rs_name or "RS tidak diketahui", []).append(r)
+    n, k = len(rows), len(by)
+    now = _wib()
+    waktu = f"{now.day} {BULAN[now.month - 1]} {now.year}, {now.hour:02d}.{now.minute:02d} WIB"
+    ringkasan = " ".join((ringkasan or "").split())[:800]
+    subject = f"[Geosentimen] {n} ulasan negatif baru di {k} rumah sakit"
+
+    # ---- teks biasa
+    t = [f"ULASAN NEGATIF BARU - Dashboard Sentimen RS Banyumas", waktu,
+         f"{n} ulasan negatif di {k} rumah sakit", ""]
+    if ringkasan:
+        t += ["RINGKASAN", ringkasan, ""]
+    for rs, items in by.items():
+        t.append(f"== {rs} ({len(items)} ulasan) ==")
+        for r in items:
+            t += [f"[{_bintang(r.rating)[1]}] {_tgl(r.published_at)}", _potong(r.text), ""]
+    t.append("Catatan: prediksi sentimen dibuat otomatis oleh model SVM dan dapat keliru. Mohon periksa isi ulasan.")
+    teks = "\n".join(t)
+
+    # ---- HTML (tabel + gaya inline agar tampil konsisten di Gmail/Outlook)
+    def kartu(r):
+        bintang, skor = _bintang(r.rating)
+        isi = esc(_potong(r.text)).replace("\n", "<br>")
+        return (
+            '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:10px 0;'
+            'background:#fff7f7;border:1px solid #fecaca;border-left:4px solid #dc2626;border-radius:6px;">'
+            '<tr><td style="padding:12px 14px;font-family:Arial,Helvetica,sans-serif;">'
+            f'<div style="font-size:13px;font-weight:700;color:#b91c1c;letter-spacing:1px;">{bintang}'
+            f'<span style="font-weight:400;letter-spacing:0;color:#6b7280;">&nbsp; {skor} &bull; {esc(_tgl(r.published_at))}</span></div>'
+            f'<div style="font-size:14px;line-height:1.6;color:#1f2937;margin-top:8px;">{isi}</div>'
+            '</td></tr></table>')
+
+    bagian = []
+    for rs, items in by.items():
+        bagian.append(
+            '<tr><td style="padding:20px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
+            f'<div style="font-size:16px;font-weight:700;color:#111827;">{esc(rs)}</div>'
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{len(items)} ulasan negatif</div></td></tr>'
+            f'<tr><td style="padding:2px 28px 0 28px;">{"".join(kartu(r) for r in items)}</td></tr>')
+    box = ""
+    if ringkasan:
+        box = ('<tr><td style="padding:16px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
+               '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:12px 14px;">'
+               '<div style="font-size:12px;font-weight:700;color:#92400e;letter-spacing:.5px;">RINGKASAN KELUHAN</div>'
+               f'<div style="font-size:14px;line-height:1.6;color:#78350f;margin-top:4px;">{esc(ringkasan)}</div>'
+               '</div></td></tr>')
+    html = (
+        '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;padding:0;background:#f3f4f6;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;">'
+        '<tr><td align="center" style="padding:24px 12px;">'
+        '<table role="presentation" width="600" cellpadding="0" cellspacing="0" '
+        'style="width:100%;max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;">'
+        '<tr><td style="background:#1e3a8a;padding:22px 28px;font-family:Arial,Helvetica,sans-serif;">'
+        '<div style="font-size:12px;color:#bfdbfe;letter-spacing:1px;">DASHBOARD SENTIMEN RS BANYUMAS</div>'
+        '<div style="font-size:22px;font-weight:700;color:#ffffff;margin-top:4px;">Ulasan Negatif Baru</div>'
+        f'<div style="font-size:13px;color:#dbeafe;margin-top:6px;">{esc(waktu)}</div></td></tr>'
+        '<tr><td style="padding:18px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
+        f'<span style="font-size:30px;font-weight:700;color:#dc2626;">{n}</span>'
+        f'<span style="font-size:14px;color:#374151;"> ulasan negatif di {k} rumah sakit</span></td></tr>'
+        + box + "".join(bagian) +
+        '<tr><td style="padding:22px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;">'
+        '<div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;line-height:1.6;color:#6b7280;">'
+        'Prediksi sentimen dibuat otomatis oleh model SVM dan dapat keliru. Mohon periksa isi ulasan sebelum menindaklanjuti.<br>'
+        'Email ini dikirim otomatis oleh Agen Geosentimen.</div></td></tr>'
+        '</table></td></tr></table></body></html>')
+    return subject, teks, html
 
 
 class OpsTools:
@@ -403,28 +516,16 @@ class OpsTools:
         if not rows:
             return {"dikirim": 0, "catatan": "tidak ada ulasan negatif baru"}
         recipients = [x.strip() for x in to.split(",") if x.strip()]
-        lines = []
-        if ringkasan.strip():
-            lines += ["RINGKASAN", ringkasan.strip()[:800], ""]
-        by = {}
-        for r in rows:
-            by.setdefault(r.rs_name, []).append(r)
-        for rs, items in by.items():
-            lines.append(f"== {rs} ({len(items)} ulasan negatif) ==")
-            for r in items:
-                lines.append(f"- Rating {r.rating}, {str(r.published_at or '')[:10]}: {(r.text or '')[:500]}")
-            lines.append("")
-        lines.append("Catatan: prediksi sentimen oleh model SVM dapat keliru. Mohon periksa isi ulasan.")
-        subject = f"[Geosentimen] {len(rows)} ulasan negatif baru"       # subjek dari kode, bukan dari teks ulasan
-        body = "\n".join(lines)
+        subject, body, html = _susun_email(rows, ringkasan)       # subjek dari kode, bukan dari teks ulasan
         try:
             if provider == "smtp":
                 msg = EmailMessage()
                 msg["Subject"], msg["From"], msg["To"] = subject, user, ", ".join(recipients)
                 msg.set_content(body)
+                msg.add_alternative(html, subtype="html")
                 self.send_mail(user, pw, recipients, msg)
             else:
-                self.http_send(provider, recipients, subject, body)
+                self.http_send(provider, recipients, subject, body, html)
         except Exception as e:
             hint = ""
             if provider == "smtp":
