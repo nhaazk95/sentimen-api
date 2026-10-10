@@ -177,7 +177,8 @@ koreksi = [
     ("dr rumah sdh panik liat keadaan anak, bgtu smpe RS bingung n untung nya ada pak securiti langsung d arahin,, bgtu masuk ruang IGD langsung d tanganin dokter tidak ada drama nunggu atau lambat penanganan,,dokter n staf ramah², ruangan nya nyaman, bersih n sejuk", "Positif")
     ("Dirawat d kamar 512 Pelayanan cukup memuaskan,perawat sopan,dokter sopan,memuaskan", "Positif"),
     ("Alhamdulillah  sangat ouas pelayanan polikliniknya sangat baik", "Positif"),
-    ("radiologi sangat baik", "Positif")
+    ("radiologi sangat baik", "Positif"),
+    ("Trimakasih atas pelayanan merawat  keluarga  kami,Baik doctor,perawatnya yg ramah .semoga rsu  medical lestari bms,semakin maju kedepanya", "Positif")
 ]
 
 df = pd.read_csv(PATH)
