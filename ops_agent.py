@@ -665,6 +665,11 @@ async def run_routine(tools, url, api_key, base_payload, http_client=None):
     async with _LOCK:
         run_id = uuid.uuid4().hex[:12]
         with tools.engine.begin() as c:
+            # Karena kunci proses ini bebas, baris 'running' yang masih ada pasti sisa proses lama yang mati
+            # (restart/deploy Render, kehabisan memori, atau service tidur di tengah run).
+            c.execute(update(agent_runs).where(agent_runs.c.status == "running").values(
+                status="terputus", finished_at=_now(),
+                report="Run terputus: proses server berhenti sebelum selesai (restart/deploy, kehabisan memori, atau service tidur)."))
             c.execute(insert(agent_runs).values(run_id=run_id, started_at=_now(), status="running"))
         status, report, log = "ok", "", []
         try:
