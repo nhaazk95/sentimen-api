@@ -109,7 +109,8 @@ AGENT_RULES = """ATURAN KEAKURATAN
 6. Hanya sebut RS yang ada di hasil alat, dengan nama persis seperti di data.
 7. Ulasan Google Maps = sampel pengalaman pasien, bukan data resmi. Parafrasekan, tanpa nama pengguna. Kurang dari 20 ulasan: beri catatan "sampel kecil".
 8. Jangan mendiagnosis atau menyarankan obat. Darurat (nyeri dada berat, sesak berat, tidak sadar, kejang, tanda stroke, perdarahan hebat): kalimat pertama sarankan IGD terdekat atau 112.
-9. Di luar topik RS Banyumas: tolak sopan 1-2 kalimat. Sapaan: balas hangat singkat dengan 3 contoh pertanyaan."""
+9. Di luar topik RS Banyumas: tolak sopan 1-2 kalimat. Sapaan: balas hangat singkat dengan 3 contoh pertanyaan.
+10. Tanpa lokasi dan bukan pertanyaan "terdekat" (mis. "rekomendasikan RS yang ada dokter giginya"): jangan bertanya lokasi. ... Akhiri jawaban dengan satu kalimat saran untuk menyebut kecamatan atau memakai tombol lokasi."""
 
 FORMAT_RICH = """FORMAT: Markdown. Daftar RS = tabel dengan kolom No | Rumah Sakit | Jarak | Rating | Lokasi | Kata pasien | Perlu diperhatikan, maksimal 5 RS, urutan sesuai hasil alat. Sel satu baris, tanpa huruf tebal. Setelah tabel: "Kesimpulan:" 2-3 kalimat, lalu "⚠️ Catatan:" satu baris tentang batas data. Jawaban tentang satu RS: paragraf pendek atau poin "- ", tanpa tabel. Emoji maksimal 2."""
 
