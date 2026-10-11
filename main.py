@@ -19,8 +19,9 @@ from preprocessing import full_preprocess, load_slang_dict
 import hmac
 from fastapi import BackgroundTasks, Header
 from sqlalchemy import select
+import asyncio
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
-                       run_routine, ops_running, agent_runs, last_run_info)
+                       run_routine, ops_running, agent_runs, last_run_info, reviews as REVIEWS_TBL)
 from agent import HospitalTools, run_agent, AgentError, AGENT_RULES
 
 # Pipeline utuh (TF-IDF + SVM) -- satu file
@@ -366,6 +367,64 @@ if AGENT_MODE and RS_HOSPITALS and RS_REVIEWS:
         stop=_STOP, find_origin=find_origin, haversine=_haversine,
     )
     print(f"[agent] aktif: {len(RS_HOSPITALS)} RS, {len(RS_REVIEWS)} ulasan berlabel", flush=True)
+
+_BASE_HOSPITALS, _BASE_REVIEWS = RS_HOSPITALS, RS_REVIEWS   # snapshot Excel (tetap)
+
+
+def reload_rs_data():
+    """Gabungkan data Excel dengan ulasan baru hasil agen ops (legacy=0), lalu bangun ulang indeks dan TOOLS."""
+    global RS_HOSPITALS, RS_REVIEWS, _N_REV, _REV_INDEX, _KEC_CENTROID, _KOTA_ALIAS, TOOLS
+    with ENGINE.connect() as c:
+        extra = c.execute(select(REVIEWS_TBL.c.rs_name, REVIEWS_TBL.c.rating, REVIEWS_TBL.c.text, REVIEWS_TBL.c.clean)
+                          .where(REVIEWS_TBL.c.legacy == 0, REVIEWS_TBL.c.clean.is_not(None))).all()
+    hosp = {h["nama"]: dict(h) for h in _BASE_HOSPITALS}
+    revs = list(_BASE_REVIEWS)
+    add = defaultdict(lambda: [0, 0.0, 0])      # jumlah ulasan, jumlah rating, banyak rating
+    for r in extra:
+        nama = (r.rs_name or "").strip()
+        if nama not in hosp:
+            continue
+        a = add[nama]
+        a[0] += 1
+        rt = _to_float(r.rating)
+        if rt is not None:
+            a[1] += rt
+            a[2] += 1
+        txt = re.sub(r"\s+", " ", str(r.text or "")).strip()
+        tok = set(str(r.clean).split())
+        if len(txt) >= 25 and tok:
+            revs.append({"rs": nama, "rating": rt, "text": txt, "tok": tok, "clean": str(r.clean)})
+    for nama, (n, ssum, nr) in add.items():
+        h = hosp[nama]
+        if nr:
+            h["rating"] = ((h["rating"] * h["n"] + ssum) / (h["n"] + nr)) if h["rating"] is not None else ssum / nr
+        h["n"] += n
+    index = defaultdict(list)
+    for i, rv in enumerate(revs):
+        for t in rv["tok"]:
+            index[t].append(i)
+    RS_HOSPITALS, RS_REVIEWS, _N_REV, _REV_INDEX = list(hosp.values()), revs, len(revs), index
+    _KEC_CENTROID, _KOTA_ALIAS = _centroids()
+    if AGENT_MODE and RS_HOSPITALS and RS_REVIEWS:
+        TOOLS = HospitalTools(hospitals=RS_HOSPITALS, reviews=RS_REVIEWS, rev_index=_REV_INDEX,
+                              preprocess=preprocess, pipeline=pipeline, label_encoder=label_encoder,
+                              stop=_STOP, find_origin=find_origin, haversine=_haversine)
+    print(f"[chat] data digabung: {len(RS_HOSPITALS)} RS, {len(RS_REVIEWS)} ulasan ({len(extra)} dari database)", flush=True)
+
+
+async def _run_dan_muat_ulang(*args):
+    await run_routine(*args)
+    try:
+        await asyncio.to_thread(reload_rs_data)
+    except Exception as e:
+        print(f"[chat] muat ulang data gagal: {e}", flush=True)
+
+
+try:
+    reload_rs_data()
+except Exception as e:
+    print(f"[chat] gagal memuat ulasan dari database: {e}", flush=True)
+
 def _deploy_model(pipe, le, metrics):
     global pipeline, label_encoder, ACCURACY, PRECISION_MACRO, RECALL_MACRO, F1_MACRO, CV_F1_MACRO
     pipeline, label_encoder = pipe, le
@@ -395,7 +454,7 @@ async def agent_run(background: BackgroundTasks, x_agent_token: str = Header(def
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
     if ops_running():
         raise HTTPException(status_code=409, detail="agen sedang berjalan")
-    background.add_task(run_routine, OPS, GROQ_URL, GROQ_API_KEY, _ops_payload())
+    background.add_task(_run_dan_muat_ulang, OPS, GROQ_URL, GROQ_API_KEY, _ops_payload())
     return {"status": "dimulai"}
 
 
@@ -439,7 +498,8 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")  # WAJIB diset di Render -> Enviro
 # Model bisa diganti lewat Render -> Environment (GROQ_MODEL) tanpa edit kode.
 # llama-3.3-70b-versatile sudah dimatikan Groq pada 16 Agustus 2026.
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-# Opsional: "low" | "medium" | "high" untuk model reasoning. Kosong = tidak dikirim.
+CHAT_MODEL = os.environ.get("CHAT_MODEL", GROQ_MODEL)                   # tambahkan
+CHAT_MAX_TOKENS = int(os.environ.get("CHAT_MAX_TOKENS", "3000")) 
 GROQ_REASONING_EFFORT = os.environ.get("GROQ_REASONING_EFFORT", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_CONTEXT_CHARS = 12000
@@ -642,8 +702,7 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
 
     fmt = resolve_format(req.format)
-    base = {"model": os.environ.get("OPS_MODEL", GROQ_MODEL),
-            "temperature": 0.2, "max_tokens": 2000}
+    base = {"model": CHAT_MODEL, "temperature": 0.2, "max_tokens": CHAT_MAX_TOKENS}
     effort = os.environ.get("OPS_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
     if effort:
         base["reasoning_effort"] = effort
@@ -653,16 +712,23 @@ async def chat(req: ChatRequest):
     reply = ""
     async with httpx.AsyncClient(timeout=90) as client:
         if TOOLS:
-            try:
-                reply = await run_agent(client, GROQ_URL, headers, base,
-                                        build_messages(req, agent=True), TOOLS, latlng)
-            except AgentError as e:
-                if e.status == 429:
-                    raise HTTPException(status_code=429,
-                                        detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
-                print(f"[agent] gagal, pakai mode lama: {e}", flush=True)
-            except httpx.HTTPError as e:
-                print(f"[agent] error jaringan, pakai mode lama: {e}", flush=True)
+            for percobaan in range(2):
+                try:
+                    reply = await run_agent(client, GROQ_URL, headers, base,
+                                            build_messages(req, agent=True), TOOLS, latlng)
+                    break
+                except AgentError as e:
+                    if e.status == 429 and percobaan == 0:
+                        await asyncio.sleep(8)      # jendela token per menit bergulir; tunggu lalu coba lagi
+                        continue
+                    if e.status == 429:
+                        raise HTTPException(status_code=429,
+                                            detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
+                    print(f"[agent] gagal, pakai mode lama: {e}", flush=True)
+                    break
+                except httpx.HTTPError as e:
+                    print(f"[agent] error jaringan, pakai mode lama: {e}", flush=True)
+                    break
 
         if not reply:   # mode agen mati/gagal -> alur lama (satu panggilan + konteks di prompt)
             resp = await client.post(GROQ_URL, headers=headers,
@@ -753,7 +819,7 @@ _last_refresh = 0.0
 
 def _ops_payload():
     base = {"model": os.environ.get("OPS_MODEL", GROQ_MODEL), "temperature": 0.2, "max_tokens": 1500}
-    effort = os.environ.get("OPS_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
+    effort = os.environ.get("CHAT_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
     if effort:
         base["reasoning_effort"] = effort
     return base
