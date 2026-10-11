@@ -273,33 +273,35 @@ def _mentions(words, phrase, fuzzy=True):
     return False
 
 
-def _origin_dari_teks(texts):
-    for t in texts:
-        words = _words(t)
-        for kec in sorted(_KEC_CENTROID, key=len, reverse=True):
-            k = " ".join(_words(kec))
-            if kec in _KEC_AMBIGU:   # hanya bila ditulis "kecamatan banyumas"
-                hit = _mentions(words, f"kecamatan {k}", fuzzy=False) or _mentions(words, f"kec {k}", fuzzy=False)
-            else:
-                hit = _mentions(words, k)
-            if hit:
-                return _KEC_CENTROID[kec][0], _KEC_CENTROID[kec][1], f"Kec. {kec.title()}"
-        for name, c in _KOTA_ALIAS.items():
-            if _mentions(words, name):
-                return c[0], c[1], "pusat kota Purwokerto"
+def _origin_dari_teks(t):
+    words = _words(t)
+    for kec in sorted(_KEC_CENTROID, key=len, reverse=True):
+        k = " ".join(_words(kec))
+        if kec in _KEC_AMBIGU:
+            hit = _mentions(words, f"kecamatan {k}", fuzzy=False) or _mentions(words, f"kec {k}", fuzzy=False)
+        else:
+            hit = _mentions(words, k)
+        if hit:
+            return _KEC_CENTROID[kec][0], _KEC_CENTROID[kec][1], f"Kec. {kec.title()}"
+    for name, c in _KOTA_ALIAS.items():
+        if _mentions(words, name):
+            return c[0], c[1], "pusat kota Purwokerto"
     return None
 
 
 def find_origin(req):
-    """Urutan: daerah yang disebut di pesan ini, lalu GPS pengguna, lalu daerah di percakapan sebelumnya."""
-    if _KEC_CENTROID:
-        hit = _origin_dari_teks([req.message])
-        if hit:
-            return hit
+    """Prioritas: daerah yang disebut di pesan ini > lokasi GPS > daerah di riwayat chat."""
+    o = _origin_dari_teks(req.message) if _KEC_CENTROID else None
+    if o:
+        return o
     if req.lat is not None and req.lng is not None and -90 <= req.lat <= 90 and -180 <= req.lng <= 180:
         return req.lat, req.lng, "lokasi pengguna"
     if _KEC_CENTROID:
-        return _origin_dari_teks([m.text for m in reversed(req.history[-4:]) if m.role == "user"])
+        for m in reversed(req.history[-4:]):
+            if m.role == "user":
+                o = _origin_dari_teks(m.text)
+                if o:
+                    return o
     return None
 
 
@@ -510,7 +512,7 @@ CHAT_MAX_TOKENS = int(os.environ.get("CHAT_MAX_TOKENS", "3000"))
 GROQ_REASONING_EFFORT = os.environ.get("GROQ_REASONING_EFFORT", "")
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 MAX_CONTEXT_CHARS = 12000
-MAX_HISTORY = 8
+MAX_HISTORY = 4
 
 # Dua mode tampilan jawaban:
 #   plain = poin-poin, teks biasa tanpa simbol Markdown (aman di halaman apa pun). DEFAULT.
@@ -573,16 +575,18 @@ Aturan:
 
 # Cara menjawab
 1. Jawab dulu, tanya belakangan. Kalau permintaan sudah cukup jelas (misalnya "rekomendasi RS untuk anak", "RS dengan IGD bagus", "anak demam"), langsung beri rekomendasi dengan asumsi yang masuk akal, lalu tawarkan penyempitan di akhir. Bertanya hanya jika tanpa jawabannya rekomendasi bisa salah arah, maksimal satu pertanyaan pendek. Kalau pengguna sudah menjawab pertanyaanmu satu kali, pada giliran berikutnya kamu wajib memberi rekomendasi, jangan bertanya lagi.
-2. Urutan RS: relevansi dengan kebutuhan lebih dulu (termasuk kedekatan lokasi bila pengguna menyebut daerah), lalu persentase positif dan jumlah ulasan. Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan menyebut satu RS "terbaik mutlak". Kalau data hanya cukup untuk kurang dari 3 RS, tampilkan yang ada dan katakan terus terang.
+2. Urutan RS: bila pengguna menanyakan yang terdekat atau menyebut lokasinya, urutkan murni dari jarak terkecil (ambil dari blok JARAK TERHITUNG SISTEM atau PROFIL RS); rating hanya untuk membedakan RS yang jaraknya hampir sama. Untuk kebutuhan lain, urutkan menurut relevansi, lalu persentase positif dan jumlah ulasan. Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan menyebut satu RS "terbaik mutlak". Kalau data hanya cukup untuk kurang dari 3 RS, tampilkan yang ada dan katakan terus terang.
 3. Tips umum yang aman boleh disampaikan walau tidak berasal dari data, dan harus ditandai sebagai tips umum: tanda bahaya yang perlu segera ke IGD, membawa kartu identitas dan kartu BPJS serta surat rujukan bila memakai BPJS, menghubungi RS dulu untuk memastikan jadwal dokter. Jangan mendiagnosis, jangan menyarankan obat atau dosis.
 4. DARURAT (nyeri dada berat, sesak berat, tidak sadar, kejang, gejala stroke, perdarahan hebat): kalimat pertama langsung sarankan ke IGD terdekat atau hubungi 112, tanpa perbandingan panjang.
 
 # Lokasi dan kedekatan
-- Kalau PROFIL RS diurutkan dari yang terdekat dan memuat "Jarak perkiraan", pakai urutan dan angka itu apa adanya dan tulis sebagai "sekitar X km (garis lurus)". Jangan merekomendasikan RS yang jaraknya lebih dari 15 km dari titik acuan, kecuali tidak ada RS lain yang relevan; kalau begitu, katakan terus terang bahwa lokasinya cukup jauh.
-- Kalau pengguna menyebut daerah (kecamatan, desa, atau kawasan) dan menanyakan RS terdekat, nilai kedekatan dari alamat di PROFIL RS. Urutan: RS di kecamatan atau desa yang sama lebih dulu, lalu RS di kecamatan yang bersebelahan atau di kota Purwokerto bila memang itu yang paling dekat, baru yang lebih jauh. Pengetahuan geografi umum Banyumas boleh dipakai hanya untuk menilai jarak antar kecamatan, bukan untuk fakta tentang RS.
-- Jangan menyebut RS yang jelas jauh (beda arah dan kira-kira lebih dari 15 km) sebagai "terdekat", dan jangan mengisi daftar dengan RS jauh hanya demi mencapai 3 RS. Kalau hanya 1 sampai 2 RS yang dekat, tampilkan itu saja, lalu katakan jarak pastinya belum ada di data sehingga rutenya perlu dicek di Google Maps.
-- Tulis alamat secara singkat: nama jalan dan kecamatan, tanpa kode pos dan tanpa rincian dusun atau RT/RW.
-- Setiap RS yang kamu sebut di bagian mana pun jawabanmu, termasuk di Catatan, harus ada di daftar jawabanmu. Jangan menyebut RS lain di luar daftar.
+- Jarak hanya boleh berasal dari blok "JARAK TERHITUNG SISTEM" atau "Jarak perkiraan" di PROFIL RS. Tulis "sekitar X km (garis lurus)". Dilarang menebak jarak, membulatkan ulang, atau memakai pengetahuan geografi sendiri tentang Banyumas.
+- Pertanyaan "terdekat": tampilkan RS dengan jarak terkecil lebih dulu, sesuai urutan blok itu. Jangan melewati RS yang lebih dekat demi RS yang ratingnya lebih tinggi. RS yang lebih jauh boleh disebut sebagai alternatif, lengkap dengan jaraknya.
+- Bila lokasi pengguna tidak diketahui, jangan menyebut jarak atau urutan kedekatan. Minta pengguna menyebut kecamatan atau menekan tombol lokasi.
+- Jangan merekomendasikan RS yang jaraknya lebih dari 15 km dari titik acuan, kecuali tidak ada RS lain yang relevan; katakan terus terang bahwa lokasinya cukup jauh.
+- Sebutkan titik acuan di awal jawaban ("dari lokasimu" atau "dari Kec. Sokaraja"). Untuk titik acuan kecamatan, jarak hanyalah perkiraan.
+- Tulis alamat singkat: nama jalan dan kecamatan, tanpa kode pos dan tanpa RT/RW.
+- Setiap RS yang kamu sebut di bagian mana pun jawabanmu, termasuk di Catatan, harus ada di daftar jawabanmu.
 
 {format_rules}
 
@@ -669,9 +673,26 @@ def _bersihkan(text):
     out = _SENTIMEN_NOISE.sub("", text or "").strip()
     return out or (text or "")
 
+_TANYA_LOKASI = re.compile(r"(?i)\b(terdekat|dekat|jarak|dari sini|di sini|sekitar sini|lokasi saya|dekat saya|dekat rumah)\b")
+
+
+def blok_jarak(req, message, n=5):
+    """Jarak dihitung KODE (haversine). Kosong bila pesan tidak menyangkut lokasi."""
+    origin = find_origin(req)
+    if origin:
+        rs = sorted(((_haversine(origin[0], origin[1], h["lat"], h["lon"]), h)
+                     for h in RS_HOSPITALS if h["lat"] is not None), key=lambda x: x[0])[:n]
+        baris = [f"{i}. {h['nama']} | {h['alamat'] or 'alamat belum ada di data'} | {d:.1f} km"
+                 for i, (d, h) in enumerate(rs, 1)]
+        return (f"JARAK TERHITUNG SISTEM dari {origin[2]} (garis lurus, bukan jarak rute), urut dari terdekat. "
+                "Pakai nama dan angka ini apa adanya; jangan menebak atau mengubah jarak.\n" + "\n".join(baris))
+    if _TANYA_LOKASI.search(message):
+        return ("LOKASI PENGGUNA TIDAK DIKETAHUI. Jangan menyebut jarak atau urutan kedekatan. "
+                "Minta pengguna menyebut kecamatan atau menekan tombol lokasi.")
+    return ""
 
 def build_messages(req: ChatRequest, agent: bool = False):
-    history = [ChatMessage(role=m.role, text=_bersihkan(m.text)) for m in req.history[-MAX_HISTORY:]]
+    history = [ChatMessage(role=m.role, text=_bersihkan(m.text)[:500]) for m in req.history[-MAX_HISTORY:]]
     message = _bersihkan(req.message)
     context = _bersihkan(req.context) if req.context else ""
     messages = [{"role": "system", "content": system_instruction(resolve_format(req.format))}]
@@ -696,6 +717,9 @@ def build_messages(req: ChatRequest, agent: bool = False):
                 "content": "DATA DARI DASHBOARD (rating, sentimen, dan kutipan ulasan Google Maps):\n"
                            + context[:MAX_CONTEXT_CHARS],
             })
+    jarak = blok_jarak(req, message)
+    if jarak:
+        messages.append({"role": "system", "content": jarak})
 
     for m in history:
         messages.append({"role": "user" if m.role == "user" else "assistant", "content": m.text})
