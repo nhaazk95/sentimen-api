@@ -23,6 +23,9 @@ import asyncio
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
                        run_routine, ops_running, agent_runs, last_run_info, reviews as REVIEWS_TBL)
 from agent import HospitalTools, run_agent, AgentError, AGENT_RULES
+import traceback
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
 # Pipeline utuh (TF-IDF + SVM) -- satu file
 pipeline = joblib.load('svm_pipeline.pkl')
@@ -65,6 +68,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def tangani_error(request: Request, exc: Exception):
+    traceback.print_exception(type(exc), exc, exc.__traceback__)       # penyebab asli masuk ke Logs Render
+    resp = JSONResponse(status_code=500, content={"detail": "Server mengalami kesalahan. Coba lagi sebentar lagi."})
+    origin = request.headers.get("origin", "")
+    if "*" in ALLOWED_ORIGINS or origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin or "*"
+    return resp
 
 @app.get("/")
 def health():
