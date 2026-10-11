@@ -273,13 +273,7 @@ def _mentions(words, phrase, fuzzy=True):
     return False
 
 
-def find_origin(req):
-    """Titik acuan jarak: koordinat dari frontend, atau kecamatan yang disebut. None bila tidak ada."""
-    if req.lat is not None and req.lng is not None and -90 <= req.lat <= 90 and -180 <= req.lng <= 180:
-        return req.lat, req.lng, "lokasi pengguna"
-    if not _KEC_CENTROID:
-        return None
-    texts = [req.message] + [m.text for m in reversed(req.history[-4:]) if m.role == "user"]
+def _origin_dari_teks(texts):
     for t in texts:
         words = _words(t)
         for kec in sorted(_KEC_CENTROID, key=len, reverse=True):
@@ -293,6 +287,19 @@ def find_origin(req):
         for name, c in _KOTA_ALIAS.items():
             if _mentions(words, name):
                 return c[0], c[1], "pusat kota Purwokerto"
+    return None
+
+
+def find_origin(req):
+    """Urutan: daerah yang disebut di pesan ini, lalu GPS pengguna, lalu daerah di percakapan sebelumnya."""
+    if _KEC_CENTROID:
+        hit = _origin_dari_teks([req.message])
+        if hit:
+            return hit
+    if req.lat is not None and req.lng is not None and -90 <= req.lat <= 90 and -180 <= req.lng <= 180:
+        return req.lat, req.lng, "lokasi pengguna"
+    if _KEC_CENTROID:
+        return _origin_dari_teks([m.text for m in reversed(req.history[-4:]) if m.role == "user"])
     return None
 
 
