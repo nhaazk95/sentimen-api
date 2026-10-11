@@ -1,11 +1,3 @@
-"""
-prepare_training_data.py -- bersihkan train_pool.csv dan test_set.csv SEKALI di laptop, supaya retrain di
-server tidak perlu menjalankan stemming ribuan kalimat (lambat di Render gratis).
-
-Pakai (dari root repo sentimen-api):  python prepare_training_data.py
-Hasil: data/training/train_pool_clean.csv dan test_set_clean.csv (kolom clean_text, label).
-Retrain otomatis memakai file *_clean.csv bila ada. Jalankan ulang bila preprocessing.py atau slang_dict.json berubah.
-"""
 import pandas as pd
 
 from preprocessing import full_preprocess, load_slang_dict

@@ -1,19 +1,3 @@
-"""
-ops_agent.py -- agen operasional Geosentimen RS Banyumas (tanpa GitHub Actions).
-
-Satu agen LLM (Groq, tool calling) menjalankan rutinitas:
-  ambil ulasan baru (Apify) -> label SVM -> simpan ke database -> email ulasan negatif
-  -> retrain model bila layak.
-
-Pembagian tugas:
-  - LLM memutuskan URUTAN langkah dan menulis ringkasan keluhan untuk email.
-  - LLM TIDAK melabeli ulasan: label hanya dari model SVM dan koreksi manusia (POST /koreksi).
-  - KODE menjaga hal yang tidak boleh salah: dedup ulasan, penerima email, tanda "sudah dikirim",
-    dan gerbang evaluasi retrain (model baru dipakai hanya bila lolos test set tetap).
-
-Penyimpanan: database lewat DATABASE_URL (SQLite untuk uji lokal, Postgres untuk Render/Neon/Supabase).
-Model hasil retrain disimpan di database juga, karena disk Render gratis hilang saat restart.
-"""
 import asyncio
 import hashlib
 import html as _html
@@ -623,7 +607,7 @@ class OpsTools:
         base = self._read_labeled(TRAIN_POOL)
         test = self._read_labeled(TEST_SET)
         extra = pd.DataFrame({TEXT_COL: [r.clean for r in corr], LABEL_COL: [r.corrected_label for r in corr]})
-        train = pd.concat([base, extra], ignore_index=True)
+        train = pd.concat([extra, base], ignore_index=True) 
         train[LABEL_COL] = train[LABEL_COL].map(norm)
         test[LABEL_COL] = test[LABEL_COL].map(norm)
         train = train[~train[TEXT_COL].isin(set(test[TEXT_COL]))].drop_duplicates(TEXT_COL)   # cegah kebocoran test set

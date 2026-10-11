@@ -1,13 +1,3 @@
-"""
-seed_from_reviews_json.py -- impor SEKALI isi reviews.json lama ke database agen, supaya dashboard tidak
-kosong dan ulasan lama tidak masuk dua kali saat Apify mengambilnya lagi.
-
-Pakai (file lokal atau URL):
-    DATABASE_URL=postgresql://... python seed_from_reviews_json.py reviews.json
-    DATABASE_URL=postgresql://... python seed_from_reviews_json.py https://.../data/reviews.json
-
-Koreksi manual lama (kolom Label_Manual) ikut diimpor sebagai label manusia, sehingga dipakai untuk retrain.
-"""
 import hashlib
 import json
 import sys
