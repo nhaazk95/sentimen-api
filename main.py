@@ -614,6 +614,42 @@ def system_instruction(fmt):
 
 SYSTEM_INSTRUCTION = system_instruction(CHAT_FORMAT)   # dipertahankan untuk kompatibilitas
 
+FORMAT_PLAIN_RINGKAS = """# Format (teks biasa, BUKAN Markdown)
+Dilarang simbol Markdown: tanda bintang, tanda pagar, backtick, dan tabel dengan karakter "|".
+Rekomendasi atau RS terdekat (3 sampai 5 RS relevan): 1-2 kalimat pembuka (kebutuhan, sumber data, titik acuan). Lalu tiap RS satu poin bernomor, dipisah baris kosong:
+1. Nama RS (kecamatan)
+- Lokasi: jalan, kecamatan, dan "sekitar X km (garis lurus)" bila ada
+- Rating: rata-rata dan jumlah ulasan
+- Kata pasien: 1-2 kalimat hal yang paling sering dipuji
+- Perlu diperhatikan: keluhan yang sering muncul; bila tidak ada, tulis demikian
+Setelah daftar: "Kesimpulan:" 2-3 kalimat RS mana cocok untuk kebutuhan apa; bila relevan "💡 Tips umum" (2-4 poin diawali "- "); satu baris "⚠️ Catatan: ..." (sampel ulasan, bukan data resmi, konfirmasi jadwal dan BPJS ke RS); tutup dengan satu kalimat tawaran lanjutan.
+Satu RS: 2-4 paragraf pendek atau poin "- ". Tiap sub-poin satu baris, maksimal sekitar 35 kata. Emoji maksimal 2. Jangan meminta data pribadi."""
+
+SYSTEM_AGENT = """Kamu "Asisten RS Banyumas": pemandu informasi rumah sakit di Kabupaten Banyumas untuk dashboard web. Hangat, natural, rinci. Pakai "saya", jangan "kami", tanpa basa-basi pembuka. Bahasa Indonesia.
+Di luar topik rumah sakit atau di luar Banyumas: tolak sopan 1-2 kalimat.
+
+# Data
+- Hanya pakai hasil alat dan isi percakapan. Dilarang mengarang alamat, telepon, jadwal dokter, tarif, BPJS, jumlah tempat tidur, atau nama dokter.
+- Klaim layanan (poli anak, NICU, IGD 24 jam, dan sebagainya) hanya bila disebut di ulasan hasil alat; kalau tidak: "belum terkonfirmasi di data, sebaiknya tanya langsung ke RS".
+- Ulasan Google Maps adalah sampel pengalaman pasien, bukan data resmi. Tiap RS entitas terpisah; pakai nama lengkap dari data.
+- Parafrasekan ulasan; kutipan langsung maksimal satu dan pendek. Jangan sebut nama pengguna. Keluhan dirujuk ke tingkat RS atau aspek layanan.
+
+# Cara menjawab
+1. Jawab dulu, tanya belakangan (maksimal satu pertanyaan pendek, hanya bila tanpa jawabannya rekomendasi salah arah).
+2. Pertanyaan terdekat atau lokasi: urut murni dari jarak terkecil; rating hanya sebagai keterangan. Kebutuhan lain: urut relevansi, lalu persen positif dan jumlah ulasan. Ulasan kurang dari 20 diberi catatan "sampel kecil". Jangan sebut satu RS "terbaik mutlak". Setiap RS yang disebut di bagian mana pun (termasuk Catatan) harus ada di daftar jawaban.
+3. Jarak hanya dari alat atau blok sistem, ditulis "sekitar X km (garis lurus)". Dilarang menebak atau memakai pengetahuan geografi sendiri. Sebut titik acuan di awal. Tanpa lokasi pengguna: jangan sebut jarak; minta kecamatan atau tombol lokasi. Jangan rekomendasikan RS lebih dari 15 km dari titik acuan kecuali tidak ada lain (katakan terus terang).
+4. Tips umum yang aman boleh (tanda bahaya ke IGD, bawa KTP, kartu BPJS, dan surat rujukan, hubungi RS dulu), ditandai sebagai tips umum. Jangan mendiagnosis atau menyarankan obat dan dosis.
+5. DARURAT (nyeri dada berat, sesak berat, tidak sadar, kejang, gejala stroke, perdarahan hebat): kalimat pertama sarankan ke IGD terdekat atau hubungi 112.
+6. Kamu bukan alat cek sentimen: setiap pesan adalah pertanyaan tentang RS. Jangan menulis "Sentimen:", skor confidence, atau label untuk pesan pengguna. Bila pengguna menempelkan ulasan, tanggapi isinya. Akurasi model dashboard: CV F1-macro {cv_f1_macro}, akurasi uji {accuracy}; itu rata-rata pada data uji, bukan jaminan untuk satu kalimat.
+7. Sapaan: balas hangat, sebut kemampuanmu (rekomendasi sesuai kebutuhan, RS terdekat dari daerah atau lokasi, membandingkan RS, merangkum kata pasien) dan beri 3 contoh pertanyaan.
+
+{format_rules}"""
+
+
+def system_instruction_agent(fmt):
+    rules = FORMAT_RICH if fmt == "rich" else FORMAT_PLAIN_RINGKAS
+    return (SYSTEM_AGENT.replace("{format_rules}", rules)
+            .replace("{cv_f1_macro}", str(CV_F1_MACRO)).replace("{accuracy}", str(ACCURACY)))
 
 def to_plain_text(text, keep_tables=False):
     """Pengaman: buang simbol Markdown yang lolos dari model (**, #, backtick).
@@ -695,7 +731,8 @@ def build_messages(req: ChatRequest, agent: bool = False):
     history = [ChatMessage(role=m.role, text=_bersihkan(m.text)[:500]) for m in req.history[-MAX_HISTORY:]]
     message = _bersihkan(req.message)
     context = _bersihkan(req.context) if req.context else ""
-    messages = [{"role": "system", "content": system_instruction(resolve_format(req.format))}]
+    messages = [{"role": "system",
+                 "content": system_instruction_agent(fmt) if agent else system_instruction(fmt)}]
 
     if agent:
         # Mode agen: data diambil model lewat alat, jadi profil/kutipan/context tidak dimasukkan ke prompt
@@ -743,23 +780,16 @@ async def chat(req: ChatRequest):
     reply = ""
     async with httpx.AsyncClient(timeout=90) as client:
         if TOOLS:
-            for percobaan in range(2):
-                try:
-                    reply = await run_agent(client, GROQ_URL, headers, base,
-                                            build_messages(req, agent=True), TOOLS, latlng)
-                    break
-                except AgentError as e:
-                    if e.status == 429 and percobaan == 0:
-                        await asyncio.sleep(8)      # jendela token per menit bergulir; tunggu lalu coba lagi
-                        continue
-                    if e.status == 429:
-                        raise HTTPException(status_code=429,
-                                            detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
-                    print(f"[agent] gagal, pakai mode lama: {e}", flush=True)
-                    break
-                except httpx.HTTPError as e:
-                    print(f"[agent] error jaringan, pakai mode lama: {e}", flush=True)
-                    break
+            try:
+                reply = await run_agent(client, GROQ_URL, headers, base,
+                                        build_messages(req, agent=True), TOOLS, latlng)
+            except AgentError as e:
+                if e.status == 429:
+                    raise HTTPException(status_code=429,
+                                        detail="Layanan chatbot sedang ramai. Coba lagi sekitar satu menit.")
+                print(f"[agent] gagal, pakai mode lama: {e}", flush=True)
+            except httpx.HTTPError as e:
+                print(f"[agent] error jaringan, pakai mode lama: {e}", flush=True)
 
         if not reply:   # mode agen mati/gagal -> alur lama (satu panggilan + konteks di prompt)
             resp = await client.post(GROQ_URL, headers=headers,

@@ -11,11 +11,40 @@ import difflib
 import json
 import math
 import re
+import asyncio
 from collections import Counter, defaultdict
 from types import SimpleNamespace
 
-MAX_STEPS = 5          # putaran terakhir memaksa model menjawab tanpa alat
-TOOL_RESULT_CHARS = 6000
+MAX_STEPS = 4          # putaran terakhir memaksa model menjawab tanpa alat
+TOOL_RESULT_CHARS = 3000
+MAX_WAIT = 20.0        # total detik menunggu 429 per jawaban
+
+
+def _retry_wait(resp):
+    try:
+        ra = resp.headers.get("retry-after")
+        if ra:
+            return float(ra) + 0.5
+    except Exception:
+        pass
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", getattr(resp, "text", "") or "")
+    if m:
+        return int(m.group(1) or 0) * 60 + float(m.group(2)) + 0.5
+    return 6.0
+
+
+async def _post(client, url, headers, payload, budget):
+    """POST ke Groq; saat 429 tunggu sesuai petunjuk Groq selama masih dalam anggaran waktu."""
+    while True:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 429:
+            return resp
+        wait = _retry_wait(resp)
+        if budget[0] < wait:
+            return resp
+        budget[0] -= wait
+        print(f"[agent] 429, menunggu {wait:.1f} detik", flush=True)
+        await asyncio.sleep(wait)
 
 # Sinonim topik (dari buatKonteks di chat-widget-block.html), dipakai untuk memfilter ulasan per topik
 TOPIK = {
@@ -36,16 +65,16 @@ TOPIK = {
 }
 
 AGENT_RULES = """# Alat (mode agen)
-Kamu punya alat untuk membaca data ulasan RS Banyumas. Untuk pertanyaan tentang rekomendasi, peringkat, perbandingan, jarak, statistik, atau isi ulasan, WAJIB panggil alat dulu; jangan menjawab dari ingatan.
-- cari_rs_terdekat(lokasi): RS terdekat dari kecamatan atau kawasan, lengkap dengan jarak garis lurus.
+Untuk pertanyaan rekomendasi, peringkat, perbandingan, jarak, statistik, atau isi ulasan, WAJIB panggil alat dulu; jangan menjawab dari ingatan.
+- cari_rs_terdekat(lokasi): RS terdekat dari kecamatan atau kawasan; jarak garis lurus dihitung sistem. Bila pengguna bilang "dekat saya" atau "di sini", isi lokasi="lokasi_pengguna".
 - statistik_rs(nama_rs): profil, rating, dan sebaran sentimen satu RS.
-- ranking_rs(topik, urut): peringkat RS berdasarkan sentimen ulasan yang menyebut suatu topik (antrean, IGD, anak, persalinan, dan sebagainya).
-- cari_ulasan(kata_kunci, nama_rs, sentimen): kutipan ulasan yang relevan.
-Aturan memakai alat:
-- Kamu boleh memanggil beberapa alat, berurutan atau sekaligus. Contoh: "RS terdekat dari Sokaraja untuk anak demam" = cari_rs_terdekat lalu cari_ulasan atau ranking_rs dengan topik "anak" untuk memeriksa RS yang dekat.
-- Hasil alat setara dengan PROFIL RS, DATA DARI DASHBOARD, dan KUTIPAN ULASAN pada aturan di atas. Alamat, jarak, rating, dan klaim layanan hanya boleh berasal dari hasil alat. Kalau hasil alat berisi error atau kosong, katakan terus terang dan jangan mengarang.
-- Persentase sentimen dari alat adalah hasil model SVM pada ulasan sampel. Sebut jumlah ulasannya, dan beri catatan "sampel kecil" bila kurang dari 20 ulasan.
-- Sapaan atau pertanyaan umum yang tidak butuh data: jawab langsung tanpa alat."""
+- ranking_rs(topik, urut): peringkat RS menurut ulasan yang menyebut suatu topik.
+- cari_ulasan(kata_kunci, nama_rs, sentimen): kutipan ulasan.
+Aturan:
+- Pertanyaan "terdekat": urutan jawaban MURNI menurut jarak dari cari_rs_terdekat (atau blok JARAK TERHITUNG SISTEM bila ada; tidak perlu memanggil cari_rs_terdekat lagi untuk lokasi yang sama). ranking_rs dan cari_ulasan hanya untuk menambah keterangan pada RS yang sudah dekat; jangan mengganti atau menaikkan RS yang lebih jauh.
+- Jarak, alamat, rating, dan klaim layanan hanya dari hasil alat atau blok sistem; jangan menghitung, membulatkan ulang, atau menebak. Bila alat error atau kosong, katakan terus terang dan minta pengguna menyebut kecamatan atau memakai tombol lokasi.
+- Persen sentimen dari alat adalah hasil model SVM pada ulasan sampel. Sebut jumlah ulasannya; beri catatan "sampel kecil" bila kurang dari 20.
+- Panggil beberapa alat sekaligus dalam satu putaran bila bisa. Sapaan atau pertanyaan umum: jawab tanpa alat."""
 
 SCHEMAS = [
     {"type": "function", "function": {
@@ -206,7 +235,7 @@ class HospitalTools:
         except (TypeError, ValueError):
             maks_km = 15.0
         req = SimpleNamespace(lat=None, lng=None, message=lokasi or "", history=[])
-        if (not lokasi or "pengguna" in str(lokasi).lower()) and user_latlng and user_latlng[0] is not None:
+        if user_latlng and user_latlng[0] is not None:
             req.lat, req.lng = user_latlng
         origin = self.find_origin(req)
         if not origin:
@@ -349,10 +378,11 @@ class HospitalTools:
 async def run_agent(client, url, headers, base_payload, messages, tools, user_latlng=None):
     """Putaran agen. Mengembalikan teks jawaban akhir ("" bila model tidak menghasilkan teks)."""
     msgs = list(messages)
+    budget = [MAX_WAIT]
     for step in range(MAX_STEPS):
         payload = dict(base_payload, messages=msgs, tools=tools.schemas,
                        tool_choice="none" if step == MAX_STEPS - 1 else "auto")
-        resp = await client.post(url, headers=headers, json=payload)
+        resp = await _post(client, url, headers, payload, budget)
         if resp.status_code != 200:
             raise AgentError(resp.status_code, resp.text)
         msg = resp.json().get("choices", [{}])[0].get("message", {})
@@ -369,5 +399,5 @@ async def run_agent(client, url, headers, base_payload, messages, tools, user_la
             result = tools.call(fn.get("name"), args, user_latlng)
             print(f"[agent] {fn.get('name')}({args}) -> {str(result)[:120]}", flush=True)
             msgs.append({"role": "tool", "tool_call_id": c.get("id"),
-                         "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_CHARS]})
+                         "content": json.dumps(result, ensure_ascii=False, separators=(",", ":"))[:TOOL_RESULT_CHARS]})
     return ""
