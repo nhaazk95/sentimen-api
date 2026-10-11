@@ -739,6 +739,7 @@ def blok_jarak(req, message, n=5):
     return ""
 
 def build_messages(req: ChatRequest, agent: bool = False):
+    fmt = resolve_format(req.format)
     history = [ChatMessage(role=m.role, text=_bersihkan(m.text)[:500]) for m in req.history[-MAX_HISTORY:]]
     message = _bersihkan(req.message)
     context = _bersihkan(req.context) if req.context else ""
@@ -782,7 +783,7 @@ async def chat(req: ChatRequest):
 
     fmt = resolve_format(req.format)
     base = {"model": CHAT_MODEL, "temperature": 0.2, "max_tokens": CHAT_MAX_TOKENS}
-    effort = os.environ.get("OPS_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
+    effort = os.environ.get("CHAT_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
     if effort:
         base["reasoning_effort"] = effort
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
@@ -891,7 +892,7 @@ _last_refresh = 0.0
 
 def _ops_payload():
     base = {"model": os.environ.get("OPS_MODEL", GROQ_MODEL), "temperature": 0.2, "max_tokens": 1500}
-    effort = os.environ.get("CHAT_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
+    effort = os.environ.get("OPS_REASONING_EFFORT", GROQ_REASONING_EFFORT or "low")
     if effort:
         base["reasoning_effort"] = effort
     return base

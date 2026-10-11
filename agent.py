@@ -7,44 +7,80 @@ Letakkan di root repo sentimen-api, sejajar dengan main.py. Modul ini tidak meng
 Alur: LLM menerima pertanyaan + daftar alat -> memutuskan alat apa yang dipanggil -> hasil alat
 dikembalikan ke LLM -> diulang sampai LLM menjawab (maksimal MAX_STEPS putaran).
 """
+import asyncio
 import difflib
 import json
 import math
+import os
 import re
-import asyncio
+import statistics
 from collections import Counter, defaultdict
 from types import SimpleNamespace
 
-MAX_STEPS = 4          # putaran terakhir memaksa model menjawab tanpa alat
-TOOL_RESULT_CHARS = 3000
-MAX_WAIT = 20.0        # total detik menunggu 429 per jawaban
+MAX_STEPS = 5          # batas putaran LLM per pertanyaan
+TOOL_RESULT_CHARS = 6000
+KEC_AMBIGU = {"banyumas"}   # nama kecamatan yang sama dengan kabupaten: hanya dipakai bila ditulis "kecamatan banyumas"
+_SINGKATAN = [(r"\bsel\b\.?", "selatan"), (r"\but\b\.?", "utara"), (r"\btim\b\.?", "timur"), (r"\bbar\b\.?", "barat")]
 
 
-def _retry_wait(resp):
-    try:
-        ra = resp.headers.get("retry-after")
-        if ra:
-            return float(ra) + 0.5
-    except Exception:
-        pass
-    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", getattr(resp, "text", "") or "")
-    if m:
-        return int(m.group(1) or 0) * 60 + float(m.group(2)) + 0.5
-    return 6.0
+def _haversine(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * 6371.0 * math.asin(math.sqrt(a))
 
 
-async def _post(client, url, headers, payload, budget):
-    """POST ke Groq; saat 429 tunggu sesuai petunjuk Groq selama masih dalam anggaran waktu."""
-    while True:
-        resp = await client.post(url, headers=headers, json=payload)
-        if resp.status_code != 429:
-            return resp
-        wait = _retry_wait(resp)
-        if budget[0] < wait:
-            return resp
-        budget[0] -= wait
-        print(f"[agent] 429, menunggu {wait:.1f} detik", flush=True)
-        await asyncio.sleep(wait)
+def _words(text):
+    return re.sub(r"[^a-z0-9 ]", " ", str(text).lower()).split()
+
+
+def _mentions(words, phrase, fuzzy=True):
+    """True bila frasa ada di daftar kata; toleran salah ketik ringan."""
+    pw = phrase.split()
+    n = len(pw)
+    if not pw or len(words) < n:
+        return False
+    target = " ".join(pw)
+    for i in range(len(words) - n + 1):
+        cand = " ".join(words[i:i + n])
+        if cand == target:
+            return True
+        if fuzzy and len(target) >= 6 and difflib.SequenceMatcher(None, cand, target).ratio() >= 0.88:
+            return True
+    return False
+
+
+def _kecamatan(addr):
+    """'... Kec. Purwokerto Sel., Kabupaten ...' -> 'Purwokerto Selatan' (singkatan arah dilengkapi)."""
+    m = re.search(r"Kec\.?\s*([^,]+)", addr or "", flags=re.I)
+    if not m:
+        return ""
+    k = m.group(1).strip()
+    for pat, full in _SINGKATAN:
+        k = re.sub(pat, full, k, flags=re.I)
+    return " ".join(w.capitalize() for w in k.replace(".", " ").split())
+
+
+def _mapbox_matrix(origin, dests):
+    """Jarak dan waktu tempuh JALAN (mobil) dari satu titik ke banyak titik lewat Mapbox Matrix API.
+    Butuh env MAPBOX_TOKEN di server (token terpisah dari token peta di browser). Mengembalikan daftar
+    (meter, detik) searah dengan dests, atau None bila tidak tersedia."""
+    token = os.environ.get("MAPBOX_TOKEN")
+    if not token or not dests:
+        return None
+    import httpx
+    coords = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in [origin] + list(dests))
+    r = httpx.get(f"https://api.mapbox.com/directions-matrix/v1/mapbox/driving/{coords}", timeout=8,
+                  params={"sources": "0", "destinations": ";".join(str(i) for i in range(1, len(dests) + 1)),
+                          "annotations": "distance,duration", "access_token": token})
+    if r.status_code != 200:
+        return None
+    j = r.json()
+    if j.get("code") != "Ok":
+        return None
+    d, t = j["distances"][0], j["durations"][0]
+    return [(d[i], t[i]) if d[i] is not None and t[i] is not None else None for i in range(len(dests))]
+
 
 # Sinonim topik (dari buatKonteks di chat-widget-block.html), dipakai untuk memfilter ulasan per topik
 TOPIK = {
@@ -64,54 +100,72 @@ TOPIK = {
     "perawat": ["perawat", "suster", "nurse"],
 }
 
-AGENT_RULES = """# Alat (mode agen)
-Untuk pertanyaan rekomendasi, peringkat, perbandingan, jarak, statistik, atau isi ulasan, WAJIB panggil alat dulu; jangan menjawab dari ingatan.
-- cari_rs_terdekat(lokasi): RS terdekat dari kecamatan atau kawasan; jarak garis lurus dihitung sistem. Bila pengguna bilang "dekat saya" atau "di sini", isi lokasi="lokasi_pengguna".
-- statistik_rs(nama_rs): profil, rating, dan sebaran sentimen satu RS.
-- ranking_rs(topik, urut): peringkat RS menurut ulasan yang menyebut suatu topik.
-- cari_ulasan(kata_kunci, nama_rs, sentimen): kutipan ulasan.
-Aturan:
-- Pertanyaan "terdekat": urutan jawaban MURNI menurut jarak dari cari_rs_terdekat (atau blok JARAK TERHITUNG SISTEM bila ada; tidak perlu memanggil cari_rs_terdekat lagi untuk lokasi yang sama). ranking_rs dan cari_ulasan hanya untuk menambah keterangan pada RS yang sudah dekat; jangan mengganti atau menaikkan RS yang lebih jauh.
-- Jarak, alamat, rating, dan klaim layanan hanya dari hasil alat atau blok sistem; jangan menghitung, membulatkan ulang, atau menebak. Bila alat error atau kosong, katakan terus terang dan minta pengguna menyebut kecamatan atau memakai tombol lokasi.
-- Persen sentimen dari alat adalah hasil model SVM pada ulasan sampel. Sebut jumlah ulasannya; beri catatan "sampel kecil" bila kurang dari 20.
-- Panggil beberapa alat sekaligus dalam satu putaran bila bisa. Sapaan atau pertanyaan umum: jawab tanpa alat."""
+AGENT_RULES = """ATURAN KEAKURATAN
+1. Semua alamat, jarak, rating, jumlah ulasan, dan klaim layanan HANYA dari hasil alat. Jangan menebak atau mengarang. Bila alat tidak punya datanya, tulis "belum ada di data".
+2. Untuk rekomendasi, lokasi, jarak, perbandingan, statistik, atau isi ulasan, panggil alat dulu. Boleh beberapa alat.
+3. Jarak: salin angka dari alat, jangan menghitung sendiri. jarak_jalan_km dan perkiraan_menit = rute mobil tanpa kemacetan; jarak_garis_lurus_km = garis lurus. Selalu sebut jenisnya. Bila hanya garis lurus yang ada, katakan jarak jalan sebenarnya bisa lebih jauh dan sarankan cek Google Maps.
+4. Pengguna berkata "dari sini", "lokasi saya", "dekat saya": panggil cari_rs_terdekat(lokasi="lokasi_pengguna"). Bila hasilnya "lokasi pengguna belum tersedia", minta pengguna menekan tombol 📍 di kepala chat dan mengizinkan lokasi, atau menyebut kecamatan atau RS asalnya. Jangan menebak lokasi.
+5. Titik acuan kecamatan hanyalah perkiraan (rata-rata posisi RS di kecamatan itu). Sebut ini bila pengguna memakai nama kecamatan.
+6. Hanya sebut RS yang ada di hasil alat, dengan nama persis seperti di data.
+7. Ulasan Google Maps = sampel pengalaman pasien, bukan data resmi. Parafrasekan, tanpa nama pengguna. Kurang dari 20 ulasan: beri catatan "sampel kecil".
+8. Jangan mendiagnosis atau menyarankan obat. Darurat (nyeri dada berat, sesak berat, tidak sadar, kejang, tanda stroke, perdarahan hebat): kalimat pertama sarankan IGD terdekat atau 112.
+9. Di luar topik RS Banyumas: tolak sopan 1-2 kalimat. Sapaan: balas hangat singkat dengan 3 contoh pertanyaan."""
+
+FORMAT_RICH = """FORMAT: Markdown. Daftar RS = tabel dengan kolom No | Rumah Sakit | Jarak | Rating | Lokasi | Kata pasien | Perlu diperhatikan, maksimal 5 RS, urutan sesuai hasil alat. Sel satu baris, tanpa huruf tebal. Setelah tabel: "Kesimpulan:" 2-3 kalimat, lalu "⚠️ Catatan:" satu baris tentang batas data. Jawaban tentang satu RS: paragraf pendek atau poin "- ", tanpa tabel. Emoji maksimal 2."""
+
+FORMAT_PLAIN = """FORMAT: teks biasa tanpa simbol Markdown (tanpa *, #, tabel). Daftar RS = poin bernomor, tiap RS dengan sub-poin "- Jarak:", "- Rating:", "- Lokasi:", "- Kata pasien:", "- Perlu diperhatikan:". Maksimal 5 RS sesuai urutan hasil alat. Lalu "Kesimpulan:" 2-3 kalimat dan "⚠️ Catatan:" satu baris. Emoji maksimal 2."""
+
+
+def agent_system(fmt="rich"):
+    """Prompt sistem ringkas untuk asisten chat (hemat token)."""
+    return ("Kamu \"Asisten RS Banyumas\": pemandu informasi rumah sakit di Kabupaten Banyumas pada dashboard sentimen. "
+            "Bahasa Indonesia, hangat, ringkas, dan akurat. Pakai \"saya\" untuk dirimu.\n\n"
+            + AGENT_RULES + "\n\n" + (FORMAT_RICH if fmt == "rich" else FORMAT_PLAIN))
+
 
 SCHEMAS = [
     {"type": "function", "function": {
         "name": "cari_rs_terdekat",
-        "description": "Cari RS terdekat dari suatu kecamatan/kawasan di Banyumas (jarak garis lurus, terurut dari yang terdekat).",
+        "description": "RS terdekat dari satu titik asal, terurut dari yang terdekat, dengan alamat, jarak, rating. Titik asal: "
+                       "lokasi pengguna (GPS), kecamatan, atau RS lain.",
         "parameters": {"type": "object", "properties": {
-            "lokasi": {"type": "string",
-                       "description": "Nama kecamatan atau kawasan, mis. 'Sokaraja' atau 'Purwokerto Selatan'. Isi 'lokasi_pengguna' bila pengguna minta 'dekat saya'."},
+            "lokasi": {"type": "string", "description": "'lokasi_pengguna' untuk 'dari sini/dekat saya', atau nama kecamatan/kawasan, mis. 'Sokaraja'."},
+            "dari_rs": {"type": "string", "description": "Nama RS asal, untuk 'RS terdekat dari RS X'. Pakai ini ATAU lokasi."},
+            "topik": {"type": "string", "description": "Opsional: topik layanan (anak, igd, persalinan, ...) agar tiap RS menyertakan ringkasan ulasan topik itu."},
             "jumlah": {"type": "integer", "description": "Berapa RS (default 5, maks 8)."},
-            "maks_km": {"type": "number", "description": "Batas jarak dalam km (default 15)."}},
-            "required": ["lokasi"]}}},
+            "maks_km": {"type": "number", "description": "Batas jarak garis lurus (default 15)."}}}}},
+    {"type": "function", "function": {
+        "name": "jarak_antar_rs",
+        "description": "Jarak dan alamat antara dua RS tertentu.",
+        "parameters": {"type": "object", "properties": {
+            "rs_a": {"type": "string"}, "rs_b": {"type": "string"}}, "required": ["rs_a", "rs_b"]}}},
     {"type": "function", "function": {
         "name": "statistik_rs",
-        "description": "Profil satu RS: alamat, kecamatan, rating rata-rata, jumlah ulasan, dan sebaran sentimen (positif/netral/negatif).",
+        "description": "Profil satu RS: alamat, rating, jumlah ulasan, sebaran sentimen.",
         "parameters": {"type": "object", "properties": {
-            "nama_rs": {"type": "string", "description": "Nama RS, boleh sebagian, mis. 'Hermina'."}},
-            "required": ["nama_rs"]}}},
+            "nama_rs": {"type": "string", "description": "Nama RS, boleh sebagian."}}, "required": ["nama_rs"]}}},
     {"type": "function", "function": {
         "name": "ranking_rs",
-        "description": "Peringkat RS dari ulasan yang menyebut suatu topik. Skor sudah dihaluskan (Bayesian) supaya RS dengan ulasan sedikit tidak menang secara tidak adil.",
+        "description": "Peringkat RS dari ulasan yang menyebut suatu topik (skor dihaluskan agar adil untuk RS berulasan sedikit).",
         "parameters": {"type": "object", "properties": {
-            "topik": {"type": "string",
-                      "description": "Topik/layanan, mis. 'igd', 'anak', 'persalinan', 'antrean', 'farmasi', 'kebersihan', 'parkir', 'bpjs'. Kosongkan untuk semua ulasan."},
-            "urut": {"type": "string", "enum": ["positif", "keluhan_sedikit", "rating", "jumlah_ulasan"],
-                     "description": "Kriteria urutan (default 'positif')."},
-            "jumlah": {"type": "integer", "description": "Berapa RS (default 5, maks 8)."},
-            "min_ulasan": {"type": "integer", "description": "Minimal ulasan yang cocok per RS (default 5)."}}}}},
+            "topik": {"type": "string", "description": "mis. igd, anak, persalinan, antrean, farmasi, kebersihan, parkir, bpjs."},
+            "urut": {"type": "string", "enum": ["positif", "keluhan_sedikit", "rating", "jumlah_ulasan"]},
+            "jumlah": {"type": "integer"}, "min_ulasan": {"type": "integer"}}}}},
     {"type": "function", "function": {
         "name": "cari_ulasan",
-        "description": "Cari kutipan ulasan pasien yang relevan dengan kata kunci, opsional untuk satu RS atau satu jenis sentimen.",
+        "description": "Kutipan ulasan pasien yang relevan dengan kata kunci; opsional per RS atau sentimen.",
         "parameters": {"type": "object", "properties": {
-            "kata_kunci": {"type": "string", "description": "Kata kunci atau kalimat pendek, mis. 'dokter anak ramah'."},
-            "nama_rs": {"type": "string", "description": "Opsional: batasi ke satu RS."},
-            "sentimen": {"type": "string", "enum": ["positif", "netral", "negatif"], "description": "Opsional."},
-            "jumlah": {"type": "integer", "description": "Berapa kutipan (default 6, maks 10)."}},
-            "required": ["kata_kunci"]}}},
+            "kata_kunci": {"type": "string"}, "nama_rs": {"type": "string"},
+            "sentimen": {"type": "string", "enum": ["positif", "netral", "negatif"]},
+            "jumlah": {"type": "integer"}}, "required": ["kata_kunci"]}}},
 ]
+
+
+def merge_system(messages):
+    """Gabungkan semua pesan system menjadi satu di awal (beberapa penyedia, mis. Gemini, menolak banyak pesan system)."""
+    parts = [m["content"] for m in messages if m.get("role") == "system" and m.get("content")]
+    rest = [m for m in messages if m.get("role") != "system"]
+    return ([{"role": "system", "content": "\n\n".join(parts)}] if parts else []) + rest
 
 
 class AgentError(Exception):
@@ -145,25 +199,31 @@ def _pct(x, n):
 
 class HospitalTools:
     def __init__(self, hospitals, reviews, rev_index, preprocess, pipeline, label_encoder,
-                 stop, find_origin, haversine):
+                 stop, find_origin=None, haversine=None, road_fn=None):
+        """pipeline/label_encoder boleh None bila tiap review sudah punya r["sent"] (mode database).
+        find_origin dan haversine hanya untuk kompatibilitas; titik asal kini dihitung di dalam kelas ini.
+        road_fn(origin, dests) -> [(meter, detik)] untuk jarak jalan; False = matikan; None = Mapbox bila ada token."""
         self.hospitals = hospitals
+        for h in self.hospitals:
+            h["kec"] = _kecamatan(h.get("alamat")) or h.get("kec", "")
         self.by_name = {h["nama"]: h for h in hospitals}
         self.reviews = reviews
         self.rev_index = rev_index
         self.n_rev = len(reviews)
         self.preprocess = preprocess
         self.stop = set(stop)
-        self.find_origin = find_origin
-        self.haversine = haversine
+        self.haversine = _haversine
+        self.road_fn = road_fn
         self.schemas = SCHEMAS
-        self._label_all(pipeline, label_encoder)
+        if pipeline is not None:
+            self._label_all(pipeline, label_encoder)
         self.by_rs = defaultdict(list)
         for r in self.reviews:
             self.by_rs[r["rs"]].append(r)
         self.kec_known = sorted({h["kec"] for h in hospitals if h.get("kec")})
+        self._build_geo()
 
-    # Label sentimen dihitung sekali saat start memakai model SVM yang sedang dipakai.
-    # Setelah retrain + redeploy, label otomatis ikut model baru.
+    # Label sentimen dihitung sekali memakai model SVM aktif (mode xlsx lama).
     def _label_all(self, pipeline, label_encoder):
         for r in self.reviews:
             r["sent"] = None
@@ -173,6 +233,44 @@ class HospitalTools:
         labels = label_encoder.inverse_transform(pipeline.predict(texts))
         for r, lab in zip(self.reviews, labels):
             r["sent"] = _norm_sent(lab)
+
+    def _build_geo(self):
+        """Titik tengah tiap kecamatan = rata-rata posisi RS di kecamatan itu (perkiraan, bukan batas wilayah resmi)."""
+        pts = defaultdict(list)
+        for h in self.hospitals:
+            if h.get("kec") and h["lat"] is not None:
+                pts[h["kec"].lower()].append((h["lat"], h["lon"]))
+        self._kec_centroid = {k: (sum(a for a, _ in v) / len(v), sum(b for _, b in v) / len(v)) for k, v in pts.items()}
+        pwt = [c for k, c in self._kec_centroid.items() if k.startswith("purwokerto")]
+        self._kota_alias = ({"purwokerto": (sum(a for a, _ in pwt) / len(pwt), sum(b for _, b in pwt) / len(pwt))}
+                            if pwt else {})
+
+    def _origin_dari_teks(self, text):
+        words = _words(text)
+        for kec in sorted(self._kec_centroid, key=len, reverse=True):
+            k = " ".join(_words(kec))
+            if kec in KEC_AMBIGU:
+                hit = _mentions(words, f"kecamatan {k}", fuzzy=False) or _mentions(words, f"kec {k}", fuzzy=False)
+            else:
+                hit = _mentions(words, k)
+            if hit:
+                c = self._kec_centroid[kec]
+                return c[0], c[1], f"Kec. {kec.title()} (titik perkiraan dari posisi RS di kecamatan itu)"
+        for name, c in self._kota_alias.items():
+            if _mentions(words, name):
+                return c[0], c[1], "pusat kota Purwokerto (titik perkiraan dari posisi RS di kota)"
+        return None
+
+    def _road(self, origin, hospitals):
+        """[(meter, detik) atau None] searah hospitals, atau None bila jarak jalan tidak tersedia."""
+        if self.road_fn is False:
+            return None
+        fn = self.road_fn or _mapbox_matrix
+        try:
+            res = fn((origin[0], origin[1]), [(h["lat"], h["lon"]) for h in hospitals])
+        except Exception:
+            return None
+        return res if res and len(res) == len(hospitals) else None
 
     # ------------------------------------------------------------------ util
     def _find_rs(self, q):
@@ -228,35 +326,101 @@ class HospitalTools:
                 "rating": round(sum(rats) / len(rats), 2) if rats else None}
 
     # ----------------------------------------------------------------- alat
-    def cari_rs_terdekat(self, lokasi="", jumlah=5, maks_km=15, user_latlng=None):
+    def cari_rs_terdekat(self, lokasi=None, dari_rs=None, jumlah=5, maks_km=15, topik=None, user_latlng=None):
         jumlah = _clamp(jumlah, 1, 8, 5)
         try:
             maks_km = float(maks_km)
         except (TypeError, ValueError):
             maks_km = 15.0
-        req = SimpleNamespace(lat=None, lng=None, message=lokasi or "", history=[])
-        if user_latlng and user_latlng[0] is not None:
-            req.lat, req.lng = user_latlng
-        origin = self.find_origin(req)
-        if not origin:
-            return {"error": f"lokasi '{lokasi}' tidak dikenali (butuh nama kecamatan atau Purwokerto)",
-                    "kecamatan_dikenal": self.kec_known}
-        ranked = []
+        exclude = None
+        if dari_rs:
+            nama, err = self._one_rs(dari_rs)
+            if err:
+                return err
+            h0 = self.by_name[nama]
+            if h0["lat"] is None:
+                return {"error": f"koordinat {nama} belum ada di data"}
+            origin = (h0["lat"], h0["lon"], f"{nama} ({h0['alamat'] or 'alamat belum ada di data'})")
+            exclude = nama
+        else:
+            teks = (lokasi or "").strip()
+            if not teks or re.search(r"pengguna|saya|sini|gps|lokasiku", teks, re.I):
+                ok = (user_latlng and user_latlng[0] is not None and user_latlng[1] is not None
+                      and -90 <= user_latlng[0] <= 90 and -180 <= user_latlng[1] <= 180)
+                if not ok:
+                    return {"error": "lokasi pengguna belum tersedia (pengguna belum mengizinkan GPS)",
+                            "saran": "minta pengguna menekan tombol 📍 di kepala chat dan mengizinkan lokasi, "
+                                     "atau menyebut nama kecamatan atau RS asal"}
+                origin = (user_latlng[0], user_latlng[1], "lokasi pengguna (GPS)")
+            else:
+                origin = self._origin_dari_teks(teks)
+                if not origin:
+                    return {"error": f"lokasi '{lokasi}' tidak dikenali", "kecamatan_dikenal": self.kec_known}
+
+        cand, tanpa = [], []
         for h in self.hospitals:
-            if h["lat"] is None:
+            if h["nama"] == exclude:
                 continue
-            ranked.append((self.haversine(origin[0], origin[1], h["lat"], h["lon"]), h))
-        ranked.sort(key=lambda x: x[0])
-        near = [x for x in ranked if x[0] <= maks_km][:jumlah]
-        catatan = "jarak garis lurus perkiraan, bukan jarak rute"
-        if not near:
-            near = ranked[:3]
-            catatan += f"; tidak ada RS dalam {maks_km:g} km, ini 3 yang paling dekat"
-        return {"titik_acuan": origin[2], "catatan": catatan,
-                "rs": [{"nama": h["nama"], "alamat": h["alamat"], "kecamatan": h["kec"],
-                        "jarak_km": round(d, 1),
-                        "rating": round(h["rating"], 2) if h["rating"] is not None else None,
-                        "jumlah_ulasan": h["n"]} for d, h in near]}
+            if h["lat"] is None or h["lon"] is None:
+                tanpa.append(h["nama"])
+                continue
+            cand.append((_haversine(origin[0], origin[1], h["lat"], h["lon"]), h))
+        cand.sort(key=lambda x: x[0])
+        short = [x for x in cand if x[0] <= maks_km][:8]
+        catatan = []
+        if not short:
+            short = cand[:3]
+            catatan.append(f"tidak ada RS dalam {maks_km:g} km; ini {len(short)} yang paling dekat")
+        road = self._road(origin, [h for _, h in short])
+        items = []
+        for i, (d, h) in enumerate(short):
+            it = {"nama": h["nama"], "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"],
+                  "jarak_garis_lurus_km": round(d, 1),
+                  "rating": round(h["rating"], 2) if h["rating"] is not None else None,
+                  "jumlah_ulasan": h["n"]}
+            if road and road[i]:
+                it["jarak_jalan_km"] = round(road[i][0] / 1000, 1)
+                it["perkiraan_menit"] = round(road[i][1] / 60)
+            if topik:
+                rx = self._topic_regex(topik)
+                rows = [r for r in self.by_rs.get(h["nama"], []) if rx and rx.search(r["text"])]
+                a = self._agg(rows)
+                it["ulasan_topik"] = {"topik": topik, "jumlah": a["n"], "positif_pct": _pct(a["positif"], a["n"]),
+                                      "negatif_pct": _pct(a["negatif"], a["n"])}
+                if a["n"] < 10:
+                    it["ulasan_topik"]["catatan"] = "sampel kecil"
+            items.append(it)
+        if road:
+            items.sort(key=lambda x: x.get("jarak_jalan_km", 1e9))
+            catatan.append("jarak_jalan_km dan perkiraan_menit = rute mobil tanpa kemacetan; jarak_garis_lurus_km = garis lurus")
+        else:
+            catatan.append("hanya jarak garis lurus yang tersedia; jarak jalan sebenarnya bisa lebih jauh")
+        out = {"titik_acuan": origin[2], "catatan": "; ".join(catatan), "rs": items[:jumlah]}
+        if tanpa:
+            out["rs_tanpa_koordinat_tidak_dihitung"] = tanpa
+        return out
+
+    def jarak_antar_rs(self, rs_a="", rs_b=""):
+        a, err = self._one_rs(rs_a)
+        if err:
+            return err
+        b, err = self._one_rs(rs_b)
+        if err:
+            return err
+        ha, hb = self.by_name[a], self.by_name[b]
+        if ha["lat"] is None or hb["lat"] is None:
+            return {"error": "koordinat salah satu RS belum ada di data"}
+        out = {"dari": {"nama": a, "alamat": ha["alamat"] or "belum ada di data"},
+               "ke": {"nama": b, "alamat": hb["alamat"] or "belum ada di data"},
+               "jarak_garis_lurus_km": round(_haversine(ha["lat"], ha["lon"], hb["lat"], hb["lon"]), 1)}
+        road = self._road((ha["lat"], ha["lon"]), [hb])
+        if road and road[0]:
+            out["jarak_jalan_km"] = round(road[0][0] / 1000, 1)
+            out["perkiraan_menit"] = round(road[0][1] / 60)
+            out["catatan"] = "jarak_jalan_km dan perkiraan_menit = rute mobil tanpa kemacetan"
+        else:
+            out["catatan"] = "hanya jarak garis lurus yang tersedia; jarak jalan sebenarnya bisa lebih jauh"
+        return out
 
     def statistik_rs(self, nama_rs=""):
         nama, err = self._one_rs(nama_rs)
@@ -362,6 +526,8 @@ class HospitalTools:
         try:
             if name == "cari_rs_terdekat":
                 return self.cari_rs_terdekat(user_latlng=user_latlng, **args)
+            if name == "jarak_antar_rs":
+                return self.jarak_antar_rs(**args)
             if name == "statistik_rs":
                 return self.statistik_rs(**args)
             if name == "ranking_rs":
@@ -375,20 +541,58 @@ class HospitalTools:
             return {"error": f"alat gagal: {e}"}
 
 
-async def run_agent(client, url, headers, base_payload, messages, tools, user_latlng=None):
-    """Putaran agen. Mengembalikan teks jawaban akhir ("" bila model tidak menghasilkan teks)."""
-    msgs = list(messages)
-    budget = [MAX_WAIT]
+def _retry_wait(resp):
+    """Lama menunggu setelah 429: header Retry-After atau teks 'try again in 1m6.1s'."""
+    try:
+        ra = resp.headers.get("retry-after")
+        if ra:
+            return min(max(float(ra), 2.0), 30.0) + 1
+    except Exception:
+        pass
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", getattr(resp, "text", "") or "")
+    if m:
+        return min(max(int(m.group(1) or 0) * 60 + float(m.group(2)), 2.0), 30.0) + 1
+    return 8.0
+
+
+async def _post(client, url, headers, payload, budget):
+    """POST ke LLM. Bila kena batas token per menit (429), tunggu lalu ulangi selama anggaran waktu (detik) masih ada,
+    supaya pengguna melihat 'mengetik' sedikit lebih lama, bukan pesan error."""
+    while True:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code != 429:
+            return resp
+        wait = _retry_wait(resp)
+        if budget["sisa"] < wait:
+            return resp
+        budget["sisa"] -= wait
+        print(f"[agent] kena batas LLM (429), menunggu {wait:.0f} detik", flush=True)
+        await asyncio.sleep(wait)
+
+
+async def run_agent(client, url, headers, base_payload, messages, tools, user_latlng=None, wait_budget=40):
+    """Putaran agen. Mengembalikan teks jawaban akhir (\"\" bila model tidak menghasilkan teks)."""
+    msgs = merge_system(messages)
+    budget = {"sisa": float(wait_budget)}
+    tool_fails, nudged = 0, False
     for step in range(MAX_STEPS):
-        payload = dict(base_payload, messages=msgs, tools=tools.schemas,
-                       tool_choice="none" if step == MAX_STEPS - 1 else "auto")
+        payload = dict(base_payload, messages=msgs, tools=tools.schemas)
         resp = await _post(client, url, headers, payload, budget)
+        if resp.status_code == 400 and "tool_use_failed" in (resp.text or "") and tool_fails < 1:
+            tool_fails += 1                      # model menulis panggilan alat yang rusak: minta ulang sekali
+            msgs.append({"role": "user", "content": "Panggilan alat sebelumnya rusak. Ulangi dengan nama alat yang lengkap dan benar."})
+            continue
         if resp.status_code != 200:
             raise AgentError(resp.status_code, resp.text)
         msg = resp.json().get("choices", [{}])[0].get("message", {})
         calls = msg.get("tool_calls") or []
+        content = (msg.get("content") or "").strip()
         if not calls:
-            return (msg.get("content") or "").strip()
+            if not content and step > 0 and not nudged:
+                nudged = True                    # setelah memakai alat model diam: minta jawaban akhir
+                msgs.append({"role": "user", "content": "Tulis jawaban akhir untuk pengguna berdasarkan hasil alat di atas."})
+                continue
+            return content
         msgs.append({"role": "assistant", "content": msg.get("content"), "tool_calls": calls})
         for c in calls:
             fn = c.get("function", {})
@@ -396,8 +600,8 @@ async def run_agent(client, url, headers, base_payload, messages, tools, user_la
                 args = json.loads(fn.get("arguments") or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = tools.call(fn.get("name"), args, user_latlng)
+            result = await asyncio.to_thread(tools.call, fn.get("name"), args, user_latlng)
             print(f"[agent] {fn.get('name')}({args}) -> {str(result)[:120]}", flush=True)
-            msgs.append({"role": "tool", "tool_call_id": c.get("id"),
-                         "content": json.dumps(result, ensure_ascii=False, separators=(",", ":"))[:TOOL_RESULT_CHARS]})
+            msgs.append({"role": "tool", "tool_call_id": c.get("id"), "name": fn.get("name"),
+                         "content": json.dumps(result, ensure_ascii=False)[:TOOL_RESULT_CHARS]})
     return ""
