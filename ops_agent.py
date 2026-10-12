@@ -38,6 +38,9 @@ MIN_F1_GAIN = float(os.environ.get("MIN_F1_GAIN", "0.0"))
 MAX_NEG_RECALL_DROP = 0.05    # recall kelas negatif tidak boleh turun lebih dari ini (alert email bergantung padanya)
 MAX_STEPS = 12
 TOOL_RESULT_CHARS = 3500     # hasil alat dipotong; konteks kecil = hemat token (batas Groq gratis 8.000 token/menit)
+GROQ_SEEN = {}                 # header kuota Groq terakhir yang terlihat
+ALERT_COOLDOWN_H = 12          # satu jenis peringatan maksimal sekali per 12 jam
+_ANON = re.compile(r"(\+?\d[\d\s\-]{6,}\d|[\w.+-]+@[\w-]+\.[\w.-]+)")   # nomor telepon dan email disamarkan
 
 # ------------------------------------------------------------------ database
 md = MetaData()
@@ -60,7 +63,13 @@ agent_runs = Table("agent_runs", md, Column("run_id", String(40), primary_key=Tr
                    Column("finished_at", String(40)), Column("status", String(20)), Column("report", Text),
                    Column("log", Text))
 kv = Table("kv", md, Column("k", String(80), primary_key=True), Column("v", Text))
-
+rs_info = Table("rs_info", md, Column("rs_name", String(255), primary_key=True), Column("phone", String(60)),
+                Column("website", String(300)), Column("categories", Text), Column("hours", Text),
+                Column("extra", Text), Column("updated_at", String(40)))
+chat_log = Table("chat_log", md, Column("id", Integer, primary_key=True, autoincrement=True),
+                 Column("ts", String(40)), Column("question", Text), Column("tools", Text),
+                 Column("empty_result", Integer), Column("used_gps", Integer), Column("mode", String(10)),
+                 Column("ms", Integer))
 
 def make_engine(url=None):
     url = url or os.environ.get("DATABASE_URL") or "sqlite:///agent.db"
@@ -132,6 +141,21 @@ def last_run_info(engine):
     return {"status": "in_progress" if r.status == "running" else "completed",
             "conclusion": None if r.status == "running" else ("success" if r.status == "ok" else "failure"),
             "created_at": r.started_at, "last_run_utc": ok}
+
+
+def log_chat(engine, question, tools, empty, used_gps, mode, ms):
+    q = _ANON.sub("[disamarkan]", (question or "")[:500])
+    with engine.begin() as c:
+        c.execute(insert(chat_log).values(ts=_now(), question=q, tools=json.dumps(tools, ensure_ascii=False)[:500],
+                                          empty_result=int(empty), used_gps=int(used_gps), mode=mode, ms=ms))
+
+
+def list_chat_log(engine, batas=50, kosong=False):
+    q = select(chat_log).order_by(chat_log.c.id.desc()).limit(_clamp(batas, 1, 200, 50))
+    if kosong:
+        q = q.where(chat_log.c.empty_result == 1)
+    with engine.connect() as c:
+        return [dict(r) for r in c.execute(q).mappings().all()]
 
 
 def export_reviews(engine):
@@ -373,6 +397,22 @@ class OpsTools:
         except ValueError:
             return None
 
+    def _simpan_info(self, places):
+        """Simpan telepon, website, kategori, dan jam buka tiap RS dari hasil Apify."""
+        now = _now()
+        with self.engine.begin() as c:
+            for p in places:
+                nama = (p.get("title") or "").strip()
+                if not nama:
+                    continue
+                cats = p.get("categories") or ([p["categoryName"]] if p.get("categoryName") else [])
+                row = {"phone": p.get("phone") or p.get("phoneUnformatted"), "website": p.get("website"),
+                       "categories": json.dumps(cats, ensure_ascii=False),
+                       "hours": json.dumps(p.get("openingHours") or [], ensure_ascii=False),
+                       "extra": json.dumps(p.get("additionalInfo") or {}, ensure_ascii=False)[:20000], "updated_at": now}
+                if not c.execute(update(rs_info).where(rs_info.c.rs_name == nama).values(**row)).rowcount:
+                    c.execute(insert(rs_info).values(rs_name=nama, **row))
+
     # ---- 1. status
     def status_data(self):
         self._expire_old_pending()
@@ -412,6 +452,10 @@ class OpsTools:
             places = self.fetch_items(token, run_input)
         except Exception as e:
             return {"error": f"Apify gagal: {e}"}
+        try:
+            self._simpan_info(places)
+        except Exception as e:
+            print(f"[ops] simpan info RS gagal: {e}", flush=True)
 
         cand, notext, luar, total = {}, 0, 0, 0
         bb = INDONESIA_BBOX
@@ -607,7 +651,7 @@ class OpsTools:
         base = self._read_labeled(TRAIN_POOL)
         test = self._read_labeled(TEST_SET)
         extra = pd.DataFrame({TEXT_COL: [r.clean for r in corr], LABEL_COL: [r.corrected_label for r in corr]})
-        train = pd.concat([extra, base], ignore_index=True) 
+        train = pd.concat([extra, base], ignore_index=True)
         train[LABEL_COL] = train[LABEL_COL].map(norm)
         test[LABEL_COL] = test[LABEL_COL].map(norm)
         train = train[~train[TEXT_COL].isin(set(test[TEXT_COL]))].drop_duplicates(TEXT_COL)   # cegah kebocoran test set
@@ -672,6 +716,77 @@ class OpsTools:
         except Exception as e:
             return {"error": f"alat gagal: {type(e).__name__}: {e}"}
 
+    # ---- 7. pemantauan kesehatan (dipanggil setelah tiap run oleh run_routine)
+    def _alert_ok(self, key):
+        last = self._kv_get("alert_" + key)
+        if last:
+            try:
+                if datetime.now(timezone.utc) - datetime.fromisoformat(last.replace("Z", "+00:00")) < timedelta(hours=ALERT_COOLDOWN_H):
+                    return False
+            except ValueError:
+                pass
+        self._kv_set("alert_" + key, _now())
+        return True
+
+    def _kirim_peringatan(self, jenis, isi):
+        to = (os.environ.get("ALERT_TO") or os.environ.get("NOTIFY_TO") or "").strip()
+        prov = _email_provider()
+        if not to or prov == "smtp":
+            print("[health] peringatan tidak dikirim:", isi[:200], flush=True)
+            return
+        try:
+            self.http_send(prov, [x.strip() for x in to.split(",") if x.strip()], f"[Geosentimen] PERINGATAN sistem: {jenis}", isi)
+        except Exception as e:
+            print("[health] gagal kirim peringatan:", e, flush=True)
+
+    def _apify_usage(self):
+        token = os.environ.get("APIFY_TOKEN")
+        if not token:
+            return None
+        import httpx
+        r = httpx.get("https://api.apify.com/v2/users/me/limits", headers={"Authorization": f"Bearer {token}"}, timeout=15)
+        if r.status_code != 200:
+            return None
+        d = r.json().get("data", {})
+        used, cap = d.get("current", {}).get("monthlyUsageUsd"), d.get("limits", {}).get("maxMonthlyUsageUsd")
+        if used is None or not cap:
+            print("[health] field kredit Apify tidak ditemukan:", list(d.keys()), flush=True)
+            return None
+        return {"used": float(used), "cap": float(cap), "pct": round(100 * float(used) / float(cap), 1)}
+
+    def pantau_kesehatan(self):
+        """Dipanggil setelah tiap run. Mengirim email peringatan (satu per jenis per 12 jam)."""
+        masalah = []
+        with self.engine.connect() as c:
+            runs = c.execute(select(agent_runs.c.status, agent_runs.c.report).order_by(agent_runs.c.started_at.desc()).limit(2)).all()
+        if len(runs) == 2 and all(r.status != "ok" for r in runs):
+            masalah.append(("run_gagal", "Run agen gagal 2 kali berturut-turut. Terakhir: " + (runs[0].report or "")[:300]))
+        try:
+            u = self._apify_usage()
+            if u and u["pct"] >= 80:
+                masalah.append(("kredit_apify", f"Kredit Apify terpakai {u['pct']}% (${u['used']:.2f} dari ${u['cap']:.2f})"))
+        except Exception as e:
+            print("[health] cek Apify gagal:", e, flush=True)
+        try:
+            rem, lim = int(GROQ_SEEN.get("x-ratelimit-remaining-requests", "")), int(GROQ_SEEN.get("x-ratelimit-limit-requests", ""))
+            if lim and rem / lim < 0.1:
+                masalah.append(("kuota_groq", f"Kuota request harian Groq tinggal {rem} dari {lim}"))
+        except ValueError:
+            pass
+        kirim = [m for m in masalah if self._alert_ok(m[0])]
+        if kirim:
+            self._kirim_peringatan(", ".join(k for k, _ in kirim), "\n\n".join(t for _, t in kirim))
+        return [t for _, t in masalah]
+
+    def status_kesehatan(self, maks_jam=13):
+        with self.engine.connect() as c:
+            ok = c.execute(select(agent_runs.c.finished_at).where(agent_runs.c.status == "ok")
+                           .order_by(agent_runs.c.finished_at.desc()).limit(1)).scalar()
+        umur = None
+        if ok:
+            umur = (datetime.now(timezone.utc) - datetime.fromisoformat(ok.replace("Z", "+00:00"))).total_seconds() / 3600
+        return {"ok": umur is not None and umur <= maks_jam, "jam_sejak_run_sukses": None if umur is None else round(umur, 1)}
+
 
 def _fn(name, desc, props=None, required=None):
     return {"type": "function", "function": {"name": name, "description": desc,
@@ -730,10 +845,12 @@ def _retry_wait(resp):
 
 
 async def _post(client, url, headers, payload, tries=6):
-    """POST ke Groq; bila kena batas token per menit (429), tunggu lalu ulangi."""
     resp = None
     for _ in range(tries):
         resp = await client.post(url, headers=headers, json=payload)
+        for k in ("x-ratelimit-limit-requests", "x-ratelimit-remaining-requests", "x-ratelimit-limit-tokens", "x-ratelimit-remaining-tokens"):
+            if resp.headers.get(k) is not None:
+                GROQ_SEEN[k] = resp.headers.get(k)
         if resp.status_code != 429:
             return resp
         wait = _retry_wait(resp)
@@ -772,6 +889,10 @@ async def run_routine(tools, url, api_key, base_payload, http_client=None):
                 c.execute(update(agent_runs).where(agent_runs.c.run_id == run_id)
                           .values(finished_at=_now(), status=status, report=report[:4000],
                                   log=json.dumps(log, ensure_ascii=False)[:20000]))
+        try:
+            await asyncio.to_thread(tools.pantau_kesehatan)
+        except Exception as e:
+            print("[health]", e, flush=True)
         return run_id
 
 
