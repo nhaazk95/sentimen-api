@@ -1,13 +1,27 @@
+"""tools_ext.py -- alat tambahan agen chat: rekomendasi gabungan, bandingkan, keluhan, tren, info layanan.
+Mewarisi HospitalTools dari agent.py. Jarak jalan memakai self._road() milik agent.py (Mapbox), bukan OSRM."""
 import contextvars
 import re
 from collections import Counter, defaultdict
 
-from agent import OUT_OF_AREA_KM, TOPIK, HospitalTools, _clamp, _pct
+from agent import HospitalTools, TOPIK
 
-CALLS = contextvars.ContextVar("calls", default=None)    # catatan alat yang dipanggil, untuk log pertanyaan
+CALLS = contextvars.ContextVar("calls", default=None)   # catatan alat yang dipanggil (untuk log pertanyaan)
 TOPIK_EXTRA = {"biaya": ["biaya", "mahal", "tarif", "bayar"],
                "keramahan": ["ramah", "judes", "galak", "cuek"],
                "fasilitas": ["fasilitas", "kamar", "ruang tunggu", "toilet"]}
+
+
+def _cl(v, lo, hi, d):
+    try:
+        v = int(v)
+    except (TypeError, ValueError):
+        return d
+    return max(lo, min(hi, v))
+
+
+def _pc(x, n):
+    return round(100.0 * x / n, 1) if n else None
 
 
 def _fn(name, desc, props, req=None):
@@ -20,8 +34,7 @@ EXTRA_SCHEMAS = [
     _fn("rekomendasi",
         "Peringkat RS gabungan: jarak (bila lokasi ada), sentimen ulasan yang menyebut topik, dan bukti ulasan. "
         "Skor dihitung sistem. Boleh tanpa lokasi.",
-        {"lokasi": {"type": "string", "description": "'lokasi_pengguna' bila pengguna minta 'dekat saya/dari sini', atau nama "
-                                                     "kecamatan/kawasan. KOSONGKAN bila pengguna tidak menyebut lokasi."},
+        {"lokasi": {"type": "string", "description": "Kecamatan/kawasan, atau 'lokasi_pengguna' bila minta dekat saya. Kosongkan bila pengguna tidak menyebut lokasi."},
          "topik": {"type": "string", "description": "Layanan/topik, mis. gigi, igd, anak, persalinan."},
          "maks_km": {"type": "number"}, "jumlah": {"type": "integer"}}),
     _fn("bandingkan_rs", "Bandingkan dua RS berdampingan: rating, sentimen, keluhan utama.",
@@ -45,23 +58,13 @@ class ToolsPlus(HospitalTools):
             self._rx[k] = re.compile("(" + "|".join(pat) + ")", re.I)
 
     # ---- util
-    def _titik_asal(self, lokasi, user_latlng):
-        """(origin, error). Keduanya None = pengguna tidak menyebut lokasi (peringkat tanpa jarak)."""
+    def _origin(self, lokasi, user_latlng):
+        """(lat, lon, label) dari GPS atau teks kecamatan; None bila tidak ada/tidak dikenali."""
         teks = (lokasi or "").strip()
-        if not teks:
-            return None, None
-        if re.search(r"pengguna|saya|sini|gps|lokasiku", teks, re.I):
-            ok = (user_latlng and user_latlng[0] is not None and user_latlng[1] is not None
-                  and -90 <= user_latlng[0] <= 90 and -180 <= user_latlng[1] <= 180)
-            if not ok:
-                return None, {"error": "lokasi pengguna belum tersedia (pengguna belum mengizinkan GPS)",
-                              "saran": "minta pengguna menekan tombol 📍 di kepala chat dan mengizinkan lokasi, "
-                                       "atau menyebut nama kecamatan atau RS asal"}
-            return (user_latlng[0], user_latlng[1], "lokasi pengguna (GPS)"), None
-        o = self._origin_dari_teks(teks)
-        if not o:
-            return None, {"error": f"lokasi '{lokasi}' tidak dikenali", "kecamatan_dikenal": self.kec_known}
-        return o, None
+        gps = bool(user_latlng and user_latlng[0] is not None and user_latlng[1] is not None)
+        if gps and (not teks or re.search(r"pengguna|saya|sini|gps|lokasiku", teks, re.I)):
+            return (user_latlng[0], user_latlng[1], "lokasi pengguna (GPS)")
+        return self._origin_dari_teks(teks) if teks else None
 
     def _keluhan(self, nama, k=5):
         cnt, contoh = Counter(), {}
@@ -77,14 +80,16 @@ class ToolsPlus(HospitalTools):
 
     # ---- alat
     def rekomendasi(self, lokasi="", topik=None, maks_km=15, jumlah=5, user_latlng=None):
-        jumlah = _clamp(jumlah, 1, 8, 5)
+        jumlah = _cl(jumlah, 1, 8, 5)
         try:
             maks_km = float(maks_km)
         except (TypeError, ValueError):
             maks_km = 15.0
-        origin, err = self._titik_asal(lokasi, user_latlng)
-        if err:
-            return err
+        origin = self._origin(lokasi, user_latlng) if (lokasi or user_latlng) else None
+        if lokasi and not origin:
+            return {"error": f"lokasi '{lokasi}' tidak dikenali atau lokasi pengguna belum tersedia",
+                    "saran": "minta pengguna menekan tombol 📍 atau menyebut kecamatan",
+                    "kecamatan_dikenal": self.kec_known}
         rx = self._topic_regex(topik) if topik else None
         by = defaultdict(list)
         for r in self.reviews:
@@ -99,11 +104,9 @@ class ToolsPlus(HospitalTools):
             rows = by.get(h["nama"], [])
             n, pos = len(rows), sum(r["sent"] == "positif" for r in rows)
             d = self.haversine(origin[0], origin[1], h["lat"], h["lon"]) if origin and h["lat"] is not None else None
-            items.append({"h": h, "n": n, "sp": (pos + m * p0) / (n + m), "d": d, "pos": _pct(pos, n)})
-        catatan, dmin = "skor: sentimen topik dan bukti ulasan (tanpa jarak)", None
+            items.append({"h": h, "n": n, "sp": (pos + m * p0) / (n + m), "d": d, "pos": _pc(pos, n)})
+        catatan = "skor: sentimen topik dan bukti ulasan (tanpa jarak)"
         if origin:
-            dists = [x["d"] for x in items if x["d"] is not None]
-            dmin = min(dists) if dists else None
             near = [x for x in items if x["d"] is not None and x["d"] <= maks_km]
             if not near:
                 near = sorted((x for x in items if x["d"] is not None), key=lambda x: x["d"])[:3]
@@ -118,18 +121,23 @@ class ToolsPlus(HospitalTools):
             x["skor"] = round(w[0] * dist + w[1] * x["sp"] + w[2] * cov, 3)
         items.sort(key=lambda x: -x["skor"])
         top = items[:jumlah]
+
         road = self._road(origin, [x["h"] for x in top]) if origin else None
         out = []
         for i, x in enumerate(top):
             h = x["h"]
-            e = {"nama": h["nama"], "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"], "skor": x["skor"],
-                 "rating": round(h["rating"], 2) if h["rating"] is not None else None, "positif_pct": x["pos"],
-                 "ulasan_menyebut_topik": x["n"], "bukti_layanan": (x["n"] > 0) if topik else None}
+            e = {"nama": h["nama"], "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"],
+                 "skor": x["skor"],
+                 "rating": round(h["rating"], 2) if h["rating"] is not None else None,
+                 "positif_pct": x["pos"], "ulasan_menyebut_topik": x["n"],
+                 "bukti_layanan": (x["n"] > 0) if topik else None}
             if x["d"] is not None:
                 e["jarak_garis_lurus_km"] = round(x["d"], 1)
             if road and road[i]:
-                e["jarak_jalan_km"], e["perkiraan_menit"] = round(road[i][0] / 1000, 1), round(road[i][1] / 60)
-            cand = sorted((r for r in by.get(h["nama"], []) if r["sent"] == "positif" and 25 <= len(r["text"]) <= 200),
+                e["jarak_jalan_km"] = round(road[i][0] / 1000, 1)
+                e["perkiraan_menit"] = round(road[i][1] / 60)
+            cand = sorted((r for r in by.get(h["nama"], [])
+                           if r["sent"] == "positif" and 25 <= len(r["text"]) <= 200),
                           key=lambda r: len(r["text"]))
             if topik and cand:
                 e["contoh_ulasan"] = cand[0]["text"]
@@ -137,28 +145,24 @@ class ToolsPlus(HospitalTools):
         if origin:
             catatan += ("; jarak_jalan_km dan perkiraan_menit = rute mobil tanpa kemacetan" if road
                         else "; hanya jarak garis lurus yang tersedia, jarak jalan sebenarnya bisa lebih jauh")
-        res = {"titik_acuan": origin[2] if origin else "tanpa lokasi", "topik": topik or "(umum)",
-               "catatan": catatan, "rs": out}
-        if dmin is not None and dmin > OUT_OF_AREA_KM:
-            res["peringatan"] = (f"Titik asal berjarak {dmin:.0f} km (garis lurus) dari RS terdekat di data, kemungkinan di luar "
-                                 "Kabupaten Banyumas. Data hanya mencakup RS di Kabupaten Banyumas: katakan ini terus terang.")
-        return res
+        return {"titik_acuan": origin[2] if origin else "tanpa lokasi", "topik": topik or "(umum)",
+                "catatan": catatan, "rs": out}
 
     def bandingkan_rs(self, rs_a="", rs_b="", topik=None):
         hasil = []
+        rx = self._topic_regex(topik) if topik else None
         for q in (rs_a, rs_b):
             nama, err = self._one_rs(q)
             if err:
                 return err
             h, rows = self.by_name[nama], self.by_rs.get(nama, [])
-            rx = self._topic_regex(topik) if topik else None
             if rx:
                 rows = [r for r in rows if rx.search(r["text"])]
             a = self._agg(rows)
             hasil.append({"nama": nama, "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"],
                           "rating_semua_ulasan": round(h["rating"], 2) if h["rating"] is not None else None,
                           "jumlah_ulasan_semua": h["n"], "ulasan_dianalisis": a["n"],
-                          "positif_pct": _pct(a["positif"], a["n"]), "negatif_pct": _pct(a["negatif"], a["n"]),
+                          "positif_pct": _pc(a["positif"], a["n"]), "negatif_pct": _pc(a["negatif"], a["n"]),
                           "keluhan_utama": self._keluhan(nama, 3), "sampel_kecil": a["n"] < 20})
         return {"topik": topik or "(semua ulasan)", "perbandingan": hasil}
 
@@ -169,7 +173,7 @@ class ToolsPlus(HospitalTools):
         rows = self.by_rs.get(nama, [])
         neg = sum(r["sent"] == "negatif" for r in rows)
         out = {"rs": nama, "ulasan_teks": len(rows), "ulasan_negatif": neg,
-               "topik": self._keluhan(nama, _clamp(jumlah, 1, 8, 5))}
+               "topik": self._keluhan(nama, _cl(jumlah, 1, 8, 5))}
         if neg < 5:
             out["catatan"] = "sampel kecil (kurang dari 5 ulasan negatif)"
         return out
@@ -184,19 +188,19 @@ class ToolsPlus(HospitalTools):
                 per[r["date"][:7]].append(r)
         if not per:
             return {"error": "ulasan RS ini belum punya tanggal"}
-        bl = sorted(per)[-_clamp(bulan, 2, 24, 6):]
+        bl = sorted(per)[-_cl(bulan, 2, 24, 6):]
         seri = []
         for b in bl:
             a = self._agg(per[b])
             seri.append({"bulan": b, "ulasan": a["n"], "rating": a["rating"],
-                         "positif_pct": _pct(a["positif"], a["n"]), "negatif_pct": _pct(a["negatif"], a["n"])})
+                         "positif_pct": _pc(a["positif"], a["n"]), "negatif_pct": _pc(a["negatif"], a["n"])})
         half = len(bl) // 2
         awal = self._agg([r for b in bl[:half] for r in per[b]])
         akhir = self._agg([r for b in bl[half:] for r in per[b]])
         if half == 0 or awal["n"] < 10 or akhir["n"] < 10:
             kes = "data belum cukup untuk menyimpulkan tren (butuh minimal 10 ulasan di tiap paruh periode)"
         else:
-            dp = _pct(akhir["positif"], akhir["n"]) - _pct(awal["positif"], awal["n"])
+            dp = _pc(akhir["positif"], akhir["n"]) - _pc(awal["positif"], awal["n"])
             dr = (akhir["rating"] or 0) - (awal["rating"] or 0)
             kes = "membaik" if (dp >= 5 or dr >= 0.2) else "memburuk" if (dp <= -5 or dr <= -0.2) else "relatif stabil"
         return {"rs": nama, "bulan_dengan_data": seri, "kesimpulan": kes}
@@ -209,10 +213,11 @@ class ToolsPlus(HospitalTools):
         if not i:
             return {"error": f"info Google Maps untuk {nama} belum tersimpan (menunggu run agen berikutnya)"}
         jam = i.get("hours") or []
-        h24 = bool(jam) and len(jam) >= 7 and all(("24 jam" in str(x).lower() or "24 hours" in str(x).lower()) for x in jam)
-        return {"nama": nama, "telepon": i.get("phone"), "website": i.get("website"), "kategori": i.get("categories"),
-                "jam_buka": jam[:7], "buka_24_jam": h24 if jam else None, "diperbarui": i.get("updated"),
-                "sumber": "Google Maps"}
+        h24 = bool(jam) and len(jam) >= 7 and all(
+            ("24 jam" in str(x).lower() or "24 hours" in str(x).lower()) for x in jam)
+        return {"nama": nama, "telepon": i.get("phone"), "website": i.get("website"),
+                "kategori": i.get("categories"), "jam_buka": jam[:7],
+                "buka_24_jam": h24 if jam else None, "diperbarui": i.get("updated"), "sumber": "Google Maps"}
 
     # ---- dispatch + catatan panggilan (untuk log pertanyaan)
     def call(self, name, args, user_latlng=None):
@@ -233,6 +238,7 @@ class ToolsPlus(HospitalTools):
             result = super().call(name, args, user_latlng)
         calls = CALLS.get()
         if calls is not None:
-            kosong = isinstance(result, dict) and ("error" in result or not any(v for k, v in result.items() if k != "catatan"))
-            calls.append((name, kosong))
+            empty = isinstance(result, dict) and (
+                "error" in result or not any(v for k, v in result.items() if k != "catatan"))
+            calls.append((name, empty))
         return result
