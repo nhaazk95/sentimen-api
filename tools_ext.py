@@ -107,17 +107,19 @@ class ToolsPlus(HospitalTools):
             n, pos = len(rows), sum(r["sent"] == "positif" for r in rows)
             d = self.haversine(origin[0], origin[1], h["lat"], h["lon"]) if origin and h["lat"] is not None else None
             items.append({"h": h, "n": n, "sp": (pos + m * p0) / (n + m), "d": d, "pos": _pc(pos, n)})
+        far = False
         catatan = "skor: sentimen topik dan bukti ulasan (tanpa jarak)"
         if origin:
             near = [x for x in items if x["d"] is not None and x["d"] <= maks_km]
-            if not near:
-                near = sorted((x for x in items if x["d"] is not None), key=lambda x: x["d"])[:3]
-                catatan = f"tidak ada RS dalam {maks_km:g} km; ini {len(near)} yang paling dekat"
-            else:
+            if near:
+                items = near
                 catatan = "skor: jarak 45%, sentimen topik 35%, bukti ulasan 20%"
-            items = near
-        w = (0.45, 0.35, 0.20) if origin else (0.0, 0.65, 0.35)
-        for x in items:
+            else:
+                far = True
+                catatan = (f"lokasi pengguna di luar area data (tidak ada RS dalam {maks_km:g} km); "
+                           "peringkat memakai sentimen topik tanpa jarak, jarak tetap ditampilkan sebagai informasi")
+        w = (0.45, 0.35, 0.20) if (origin and not far) else (0.0, 0.65, 0.35)
+        for x in items:     
             dist = max(0.0, 1 - x["d"] / maks_km) if x["d"] is not None else 0.0
             cov = min(1.0, x["n"] / 10) if topik else min(1.0, (x["h"]["n"] or 0) / 100)
             x["skor"] = round(w[0] * dist + w[1] * x["sp"] + w[2] * cov, 3)

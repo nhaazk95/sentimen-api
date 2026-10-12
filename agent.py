@@ -137,7 +137,8 @@ AGENT_RULES = """ATURAN KEAKURATAN
 11. Bandingkan_rs(rs_a, rs_b): bandingkan dua RS. topik_keluhan(nama_rs): keluhan paling sering. tren_rs(nama_rs, bulan): perkembangan per bulan; ceritakan "kesimpulan" dari alat, jangan menghitung sendiri.
 12. Info_rs(nama_rs): telepon, website, kategori, jam buka. Nomor telepon dan jam hanya boleh dari alat ini.
 13. Bila ada jarak_jalan_km dan perkiraan_menit, sebut sebagai "rute mobil tanpa kemacetan"; selain itu pakai jarak garis lurus.
-14. Tanpa lokasi dan bukan pertanyaan "terdekat" (mis. "rekomendasikan RS yang ada dokter giginya"): jangan bertanya lokasi. Panggil rekomendasi(topik=...) tanpa lokasi. Akhiri jawaban dengan satu kalimat saran untuk menyebut kecamatan atau memakai tombol lokasi."""
+14. Tanpa lokasi dan bukan pertanyaan "terdekat" (mis. "rekomendasikan RS yang ada dokter giginya"): jangan bertanya lokasi. Panggil rekomendasi(topik=...) tanpa lokasi. Akhiri jawaban dengan satu kalimat saran untuk menyebut kecamatan atau memakai tombol lokasi.
+15. Bila pertanyaan menyebut layanan atau topik (gigi, igd, anak, persalinan, dst), selalu pakai rekomendasi(lokasi, topik), walau ada kata "terdekat". cari_rs_terdekat hanya untuk pertanyaan jarak tanpa topik layanan. Bila lokasi pengguna di luar area data, katakan itu terus terang dan sebut RS terbaik untuk topik itu."""
 
 FORMAT_RICH = """FORMAT: Markdown. Daftar RS = tabel dengan kolom No | Rumah Sakit | Jarak | Rating | Lokasi | Kata pasien | Perlu diperhatikan, maksimal 5 RS, urutan sesuai hasil alat. Sel satu baris, tanpa huruf tebal. Setelah tabel: "Kesimpulan:" 2-3 kalimat, lalu "⚠️ Catatan:" satu baris tentang batas data. Jawaban tentang satu RS: paragraf pendek atau poin "- ", tanpa tabel. Emoji maksimal 2."""
 
