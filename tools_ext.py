@@ -130,7 +130,7 @@ class ToolsPlus(HospitalTools):
         out = []
         for i, x in enumerate(top):
             h = x["h"]
-            e = {"nama": h["nama"], "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"],
+            e = {"nama": h["nama"], "alamat": (h["alamat"] or "belum ada di data")[:90], "kecamatan": h["kec"],
                  "skor": x["skor"],
                  "rating": round(h["rating"], 2) if h["rating"] is not None else None,
                  "positif_pct": x["pos"], "ulasan_menyebut_topik": x["n"],
@@ -144,7 +144,7 @@ class ToolsPlus(HospitalTools):
                            if r["sent"] == "positif" and 25 <= len(r["text"]) <= 200),
                           key=lambda r: len(r["text"]))
             if topik and cand:
-                e["contoh_ulasan"] = cand[0]["text"]
+                e["contoh_ulasan"] = cand[0]["text"][:120]
             out.append(e)
         if origin:
             catatan += ("; jarak_jalan_km dan perkiraan_menit = rute mobil tanpa kemacetan" if road
@@ -220,9 +220,23 @@ class ToolsPlus(HospitalTools):
         jam = i.get("hours") or []
         h24 = bool(jam) and len(jam) >= 7 and all(
             ("24 jam" in str(x).lower() or "24 hours" in str(x).lower()) for x in jam)
-        return {"nama": nama, "telepon": i.get("phone"), "website": i.get("website"),
+        h = self.by_name[nama]
+        return {"nama": nama, "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"],
+                "rating": round(h["rating"], 2) if h["rating"] is not None else None,
+                "telepon": i.get("phone"), "website": i.get("website"),
                 "kategori": i.get("categories"), "jam_buka": jam[:7],
                 "buka_24_jam": h24 if jam else None, "diperbarui": i.get("updated"), "sumber": "Google Maps"}
+
+    def _find_rs(self, q):
+        res = super()._find_rs(q)
+        if len(res) == 1:
+            return res
+        q2 = re.sub(r"\brsu\b", "rumah sakit umum", (q or "").lower())
+        if q2 != (q or "").lower():
+            r2 = super()._find_rs(q2)
+            if r2:
+                return r2
+        return res
 
     # ---- dispatch + catatan panggilan (untuk log pertanyaan)
     def call(self, name, args, user_latlng=None):
