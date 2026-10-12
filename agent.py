@@ -601,6 +601,14 @@ async def _post(client, url, headers, payload, budget):
 async def run_agent(client, url, headers, base_payload, messages, tools, user_latlng=None, wait_budget=40):
     """Putaran agen. Mengembalikan teks jawaban akhir (\"\" bila model tidak menghasilkan teks)."""
     msgs = merge_system(messages)
+    if user_latlng and user_latlng[0] is not None and user_latlng[1] is not None:
+        hint = ("\n\nINFO SISTEM: lokasi GPS pengguna SUDAH tersedia. Untuk 'terdekat', 'dekat saya', 'dari saya', "
+                "atau 'dari sini', langsung panggil cari_rs_terdekat(lokasi=\"lokasi_pengguna\") atau "
+                "rekomendasi(lokasi=\"lokasi_pengguna\", topik=...). Jangan meminta kecamatan.")
+        if msgs and msgs[0].get("role") == "system":
+            msgs[0] = dict(msgs[0], content=msgs[0]["content"] + hint)
+        else:
+            msgs.insert(0, {"role": "system", "content": hint.strip()})
     budget = {"sisa": float(wait_budget)}
     tool_fails, nudged = 0, False
     for step in range(MAX_STEPS):
