@@ -23,6 +23,8 @@ def _cl(v, lo, hi, d):
 def _pc(x, n):
     return round(100.0 * x / n, 1) if n else None
 
+def _key(s):
+    return re.sub(r"[^a-z0-9]", "", str(s).lower())
 
 def _fn(name, desc, props, req=None):
     return {"type": "function", "function": {"name": name, "description": desc,
@@ -211,7 +213,8 @@ class ToolsPlus(HospitalTools):
             return err
         i = self.info.get(nama)
         if not i:
-            return {"error": f"info Google Maps untuk {nama} belum tersimpan (menunggu run agen berikutnya)"}
+            k = _key(nama)
+            i = next((v for n, v in self.info.items() if _key(n) == k), None)
         jam = i.get("hours") or []
         h24 = bool(jam) and len(jam) >= 7 and all(
             ("24 jam" in str(x).lower() or "24 hours" in str(x).lower()) for x in jam)
