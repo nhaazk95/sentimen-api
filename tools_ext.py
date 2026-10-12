@@ -223,6 +223,7 @@ class ToolsPlus(HospitalTools):
         h = self.by_name[nama]
         return {"nama": nama, "alamat": h["alamat"] or "belum ada di data", "kecamatan": h["kec"],
                 "rating": round(h["rating"], 2) if h["rating"] is not None else None,
+                "jumlah_ulasan": h["n"],
                 "telepon": i.get("phone"), "website": i.get("website"),
                 "kategori": i.get("categories"), "jam_buka": jam[:7],
                 "buka_24_jam": h24 if jam else None, "diperbarui": i.get("updated"), "sumber": "Google Maps"}
