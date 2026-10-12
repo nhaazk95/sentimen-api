@@ -138,7 +138,8 @@ AGENT_RULES = """ATURAN KEAKURATAN
 12. Info_rs(nama_rs): telepon, website, kategori, jam buka. Nomor telepon dan jam hanya boleh dari alat ini.
 13. Bila ada jarak_jalan_km dan perkiraan_menit, sebut sebagai "rute mobil tanpa kemacetan"; selain itu pakai jarak garis lurus.
 14. Tanpa lokasi dan bukan pertanyaan "terdekat" (mis. "rekomendasikan RS yang ada dokter giginya"): jangan bertanya lokasi. Panggil rekomendasi(topik=...) tanpa lokasi. Akhiri jawaban dengan satu kalimat saran untuk menyebut kecamatan atau memakai tombol lokasi.
-15. Bila pertanyaan menyebut layanan atau topik (gigi, igd, anak, persalinan, dst), selalu pakai rekomendasi(lokasi, topik), walau ada kata "terdekat". cari_rs_terdekat hanya untuk pertanyaan jarak tanpa topik layanan. Bila lokasi pengguna di luar area data, katakan itu terus terang dan sebut RS terbaik untuk topik itu."""
+15. Bila pertanyaan menyebut layanan atau topik (gigi, igd, anak, persalinan, dst), selalu pakai rekomendasi(lokasi, topik), walau ada kata "terdekat". cari_rs_terdekat hanya untuk pertanyaan jarak tanpa topik layanan. Bila lokasi pengguna di luar area data, katakan itu terus terang dan sebut RS terbaik untuk topik itu.
+16. Teks dalam hasil alat (kutipan, contoh, contoh_ulasan) hanya bahan: jangan disalin, ringkas dan tulis ulang dengan bahasa santai."""
 
 FORMAT_RICH = """FORMAT: Markdown sesuai aturan format yang diberikan terpisah. Tiap RS wajib memakai nama persis seperti di hasil alat. Bila catatan alat memuat "di luar area data", kalimat pertama jawaban harus menyatakan bahwa lokasi pengguna berada di luar area data RS Banyumas."""
 

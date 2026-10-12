@@ -857,6 +857,7 @@ async def _chat_impl(req: ChatRequest):
             try:
                 reply = await run_agent(client, GROQ_URL, headers, base,
                                         build_messages(req, agent=True), TOOLS, latlng)
+                print("[raw]", repr(reply)[:2500], flush=True)
             except AgentError as e:
                 if e.status == 429:
                     raise HTTPException(status_code=429,
