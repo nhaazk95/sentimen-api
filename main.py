@@ -25,11 +25,6 @@ from preprocessing import full_preprocess, load_slang_dict
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
                        run_routine, ops_running, agent_runs, last_run_info,
                        reviews as REVIEWS_TBL, rs_info)
-from fastapi import FastAPI
-from agent_tools import router as agent_tools_router
-
-app = FastAPI(title="Sentimen API")
-app.include_router(agent_tools_router)
 
 # Pipeline utuh (TF-IDF + SVM) -- satu file
 pipeline = joblib.load('svm_pipeline.pkl')
@@ -519,15 +514,24 @@ def _need_token(tok):
     if not AGENT_RUN_TOKEN or not hmac.compare_digest((tok or "").encode(), AGENT_RUN_TOKEN.encode()):
         raise HTTPException(status_code=401, detail="token salah")
 
+_retrain = {"berjalan": False, "hasil": None}
+
+
+def _retrain_job():
+    try:
+        _retrain["hasil"] = OPS.call("retrain_model", {})
+    finally:
+        _retrain["berjalan"] = False
 
 @app.post("/agent/run", status_code=202)
 async def agent_run(background: BackgroundTasks, x_agent_token: str = Header(default=None)):
     _need_token(x_agent_token)
     if ops_running():
         raise HTTPException(status_code=409, detail="rutinitas sedang berjalan")
+    if _retrain["berjalan"]:
+        raise HTTPException(status_code=409, detail="retrain sedang berjalan")
     background.add_task(_run_dan_muat_ulang, OPS)
     return {"status": "dimulai"}
-
 
 @app.get("/agent/status")
 def agent_status(x_agent_token: str = Header(default=None)):
@@ -536,6 +540,22 @@ def agent_status(x_agent_token: str = Header(default=None)):
         runs = c.execute(select(agent_runs).order_by(agent_runs.c.started_at.desc()).limit(5)).mappings().all()
     return {"berjalan": ops_running(), "run_terakhir": [dict(r) for r in runs], "data": OPS.status_data()}
 
+@app.get("/agent/ringkas")
+def agent_ringkas(x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    return {"siklus_berjalan": ops_running(), "retrain_berjalan": _retrain["berjalan"],
+            "run_terakhir": last_run_info(ENGINE), "data": OPS.status_data(),
+            "hasil_retrain_terakhir": _retrain["hasil"]}
+
+@app.post("/agent/retrain", status_code=202)
+def agent_retrain(background: BackgroundTasks, x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    if ops_running() or _retrain["berjalan"]:
+        raise HTTPException(status_code=409, detail="rutinitas atau retrain sedang berjalan")
+    _retrain["berjalan"] = True
+    _retrain["hasil"] = None
+    background.add_task(_retrain_job)
+    return {"status": "dimulai"}
 
 @app.get("/health/agent")          # publik dan minimal; dipantau cron-job.org (503 = agen tidak berjalan)
 def health_agent():
