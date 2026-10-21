@@ -25,17 +25,11 @@ from preprocessing import full_preprocess, load_slang_dict
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
                        run_routine, ops_running, agent_runs, last_run_info,
                        reviews as REVIEWS_TBL, rs_info)
+from fastapi import FastAPI
 from agent_tools import router as agent_tools_router
-app.include_router(agent_tools_router)
 
-# ============================================================
-# CATATAN VERSI INI
-# - Chatbot (/chat, agent Groq, ToolsPlus, prompt, log chat) DIHAPUS. Chatbot sekarang agent Copilot Studio.
-# - Copilot Studio memanggil API ini sebagai tool: /predict, /rs/terdekat, /rs/ulasan, /rs/profil,
-#   /rs/ringkasan, /ulasan/per-jam, dan (agen notifikasi, bertoken) /ulasan/negatif-baru + /ulasan/tandai-terkirim.
-# - Tidak ada Groq/LLM lagi di server ini. /saran dihapus (masukan email disusun agen Copilot Studio).
-# - Pipeline data (/reviews.json, /refresh, /agent/run) tetap ada, kini rutinitas biasa tanpa LLM.
-# ============================================================
+app = FastAPI(title="Sentimen API")
+app.include_router(agent_tools_router)
 
 # Pipeline utuh (TF-IDF + SVM) -- satu file
 pipeline = joblib.load('svm_pipeline.pkl')
