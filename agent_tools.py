@@ -2,6 +2,7 @@ import json, math, time, urllib.request, difflib
 from collections import Counter
 from datetime import datetime, timedelta
 from fastapi import APIRouter
+import re
 
 router = APIRouter()
 
@@ -49,12 +50,12 @@ def jarak(a, b):
     return 2 * 6371 * math.asin(math.sqrt(h))
 
 def titik_daerah(daerah):
-    d = daerah.lower()
+    d = norm(daerah)
     pts = [(p["lat"], p["lng"]) for p in PROFIL
-           if p["lat"] and p["kecamatan"] and d in p["kecamatan"].lower()]
+           if p["lat"] and p["kecamatan"] and d in norm(p["kecamatan"])]
     if not pts:
         pts = [(p["lat"], p["lng"]) for p in PROFIL
-               if p["lat"] and d in (p["nama"] + " " + (p["alamat"] or "")).lower()]
+               if p["lat"] and d in norm(p["nama"] + " " + (p["alamat"] or ""))]
     if not pts:
         return None
     return (sum(x for x, _ in pts) / len(pts), sum(y for _, y in pts) / len(pts))
@@ -93,6 +94,13 @@ def ulasan_topik(topik: str, rs: str = None):
     out = [r for r in semua_ulasan() if cocok_rs(r, rs)
            and any(k in (r.get("Isi Ulasan") or "").lower() for k in kunci)]
     return {"topik": topik, "jumlah": len(out), "kutipan": [ringkas(r) for r in out[:8]]}
+
+def norm(s):
+    s = (s or "").lower()
+    for pendek, penuh in (("sel", "selatan"), ("ut", "utara"),
+                          ("tim", "timur"), ("bar", "barat")):
+        s = re.sub(rf"\b{pendek}\.?(?=\s|,|$)", penuh, s)
+    return s.replace(".", "").strip()
 
 @router.get("/ulasan-per-jam")
 def ulasan_per_jam(jam: int, rs: str = None):
