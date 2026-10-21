@@ -43,7 +43,7 @@ MIN_NEW_CORRECTIONS = int(os.environ.get("MIN_NEW_CORRECTIONS", "30"))
 MIN_F1_GAIN = float(os.environ.get("MIN_F1_GAIN", "0.0"))
 MAX_NEG_RECALL_DROP = 0.05    # recall kelas negatif tidak boleh turun lebih dari ini (alert email bergantung padanya)
 ALERT_COOLDOWN_H = 12          # satu jenis peringatan maksimal sekali per 12 jam
-
+RETRAIN_OLEH_COPILOT = (os.environ.get("RETRAIN_MODE") or "kode").strip().lower() == "copilot"
 # ------------------------------------------------------------------ database
 md = MetaData()
 reviews = Table(
@@ -938,7 +938,8 @@ def _jalankan(tools, log):
     lewat_copilot = _notify_via_copilot()
     if not lewat_copilot:
         langkah.append("kirim_email_negatif")
-    langkah.append("retrain_model")        # sistem sendiri yang menolak bila belum waktunya
+    if not RETRAIN_OLEH_COPILOT:
+        langkah.append("retrain_model")
     for nama in langkah:
         hasil = tools.call(nama, {})
         print(f"[ops] {nama} -> {str(hasil)[:150]}", flush=True)
@@ -946,6 +947,8 @@ def _jalankan(tools, log):
     if lewat_copilot:
         log.append({"alat": "kirim_email_negatif",
                     "hasil": "dilewati: email dikirim agen Copilot Studio (NOTIFY_MODE=copilot)"})
+    if RETRAIN_OLEH_COPILOT:
+        log.append({"alat": "retrain_model", "hasil": "dilewati: dijalankan agen Copilot Studio (RETRAIN_MODE=copilot)"})
     return "Rutinitas selesai:\n" + "\n".join(f"- {x['alat']}: {x['hasil'][:200]}" for x in log)
 
 
