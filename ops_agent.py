@@ -69,6 +69,11 @@ rs_info = Table("rs_info", md, Column("rs_name", String(255), primary_key=True),
                 Column("website", String(300)), Column("categories", Text), Column("hours", Text),
                 Column("extra", Text), Column("updated_at", String(40)))
 
+notif_log = Table("notif_log", md,
+                  Column("id", String(40), primary_key=True),
+                  Column("event", String(10)),        # 'served' = diambil agen, 'marked' = ditandai terkirim
+                  Column("review_id", String(255)),
+                  Column("ts", String(40)))
 
 def make_engine(url=None):
     url = url or os.environ.get("DATABASE_URL") or "sqlite:///agent.db"
@@ -612,11 +617,19 @@ class OpsTools:
             c.execute(update(reviews).where(reviews.c.review_id.in_([r.review_id for r in rows])).values(notified=1))
         return {"dikirim": len(rows), "penerima": len(recipients), "lewat": provider}
 
+    def _log_notif(self, event, ids):
+        if not ids:
+            return
+        with self.engine.begin() as c:
+            c.execute(insert(notif_log), [{"id": uuid.uuid4().hex, "event": event,
+                                           "review_id": i, "ts": _now()} for i in ids])
+
     # ---- 4b. untuk agen notifikasi Copilot Studio (dipanggil lewat endpoint bertoken)
     def negatif_baru(self, batas=20):
         """Ulasan negatif yang belum diemailkan, dengan teks lengkap (maks 1500 karakter), supaya agen Copilot
         Studio menyusun emailnya sendiri. Tanpa nama pengguna."""
         rows = self._pending_negative(_clamp(batas, 1, 50, 20))
+        self._log_notif("served", [r.review_id for r in rows])
         with self.engine.connect() as c:
             total = c.execute(select(func.count()).select_from(reviews)
                               .where(self._eff() == "negatif", reviews.c.notified == 0)).scalar()
@@ -632,6 +645,7 @@ class OpsTools:
             return {"ditandai": 0}
         with self.engine.begin() as c:
             n = c.execute(update(reviews).where(reviews.c.review_id.in_(ids)).values(notified=1)).rowcount
+        self._log_notif("marked", ids)
         return {"ditandai": n}
 
     # ---- 4c. ulasan menurut jam tulis (untuk pertanyaan "berapa komentar jam 08.00?")
