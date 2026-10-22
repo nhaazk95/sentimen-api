@@ -954,17 +954,22 @@ def _jalankan(tools, log):
         langkah.append("kirim_email_negatif")
     if not RETRAIN_OLEH_COPILOT:
         langkah.append("retrain_model")
+    gagal = []
     for nama in langkah:
         hasil = tools.call(nama, {})
         print(f"[ops] {nama} -> {str(hasil)[:150]}", flush=True)
         log.append({"alat": nama, "hasil": str(hasil)[:300]})
+        if isinstance(hasil, dict) and "error" in hasil:
+            gagal.append(nama)
     if lewat_copilot:
         log.append({"alat": "kirim_email_negatif",
                     "hasil": "dilewati: email dikirim agen Copilot Studio (NOTIFY_MODE=copilot)"})
     if RETRAIN_OLEH_COPILOT:
         log.append({"alat": "retrain_model", "hasil": "dilewati: dijalankan agen Copilot Studio (RETRAIN_MODE=copilot)"})
-    return "Rutinitas selesai:\n" + "\n".join(f"- {x['alat']}: {x['hasil'][:200]}" for x in log)
-
+    ringkasan = "Rutinitas selesai:\n" + "\n".join(f"- {x['alat']}: {x['hasil'][:200]}" for x in log)
+    if gagal:
+        raise RuntimeError(f"Langkah gagal: {', '.join(gagal)}\n{ringkasan}")
+    return ringkasan
 
 async def run_routine(tools, *_abaikan, **_kw):
     """Jalankan satu rutinitas dan catat hasilnya di tabel agent_runs (argumen tambahan diabaikan agar
