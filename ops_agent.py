@@ -26,6 +26,8 @@ from sqlalchemy import (Column, Float, Integer, LargeBinary, MetaData, String, T
 #     "copilot"          : server TIDAK mengirim; agen Copilot Studio mengambil lewat negatif_baru() lalu
 #                          mengirim lewat Outlook dan memanggil tandai_terkirim()
 # - Tidak lagi bergantung pada agent.py.
+# - Setiap retrain yang benar-benar melatih (termasuk yang ditolak gerbang) dicatat di tabel retrain_log
+#   (waktu, durasi, F1 lama dan kandidat, recall negatif, versi). Hasil terakhir juga tampil di status_data().
 
 # ------------------------------------------------------------------ konfigurasi
 PLACES_FILE = os.environ.get("PLACES_FILE", "places.json")          # daftar URL Google Maps tiap RS
@@ -74,6 +76,16 @@ notif_log = Table("notif_log", md,
                   Column("event", String(10)),        # 'served' = diambil agen, 'marked' = ditandai terkirim
                   Column("review_id", String(255)),
                   Column("ts", String(40)))
+
+retrain_log = Table("retrain_log", md,                 # satu baris = satu retrain yang benar-benar melatih model
+                    Column("id", String(40), primary_key=True),
+                    Column("ts", String(40)),
+                    Column("durasi_detik", Float),     # sudah termasuk pelabelan ulang bila model dipasang
+                    Column("dipasang", Integer),       # 1 = lolos gerbang evaluasi dan dipasang, 0 = ditolak
+                    Column("f1_lama", Float), Column("f1_kandidat", Float),
+                    Column("recall_neg_lama", Float), Column("recall_neg_kandidat", Float),
+                    Column("contoh_latih", Integer), Column("versi", String(40)))
+
 
 def make_engine(url=None):
     url = url or os.environ.get("DATABASE_URL") or "sqlite:///agent.db"
@@ -444,6 +456,16 @@ class OpsTools:
                     c.execute(insert(rs_info).values(rs_name=nama, **row))
 
     # ---- 1. status
+    def _retrain_terakhir(self):
+        """Hasil retrain terakhir sebagai objek (memuat waktu_utc dan durasi_detik), atau 'belum pernah'."""
+        raw = self._kv_get("last_retrain_result")
+        if not raw:
+            return "belum pernah"
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return raw
+
     def status_data(self):
         self._expire_old_pending()
         eff = self._eff()
@@ -461,7 +483,7 @@ class OpsTools:
                 "per_label": {k: v for k, v in by}, "koreksi_total": corr,
                 "koreksi_sejak_retrain_terakhir": corr - last, "syarat_retrain": MIN_NEW_CORRECTIONS,
                 "f1_macro_model_aktif": metrics.get("f1_macro"),
-                "retrain_terakhir": self._kv_get("last_retrain_result", "belum pernah"),
+                "retrain_terakhir": self._retrain_terakhir(),
                 "email_oleh": "agen Copilot Studio" if _notify_via_copilot() else "server"}
 
     # ---- 2. ambil ulasan
@@ -781,19 +803,13 @@ class OpsTools:
         out = pd.DataFrame({TEXT_COL: txt, LABEL_COL: df[LABEL_COL]}).dropna()
         out = out[out[TEXT_COL].str.strip().ne("") & out[TEXT_COL].ne("nan")]
         return out.reset_index(drop=True)
-        
-    from sklearn.base import clone
-    from sklearn.model_selection import cross_val_score
 
     def retrain_model(self):
         import pandas as pd
         from sklearn.base import clone
-        from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-        from sklearn.model_selection import GridSearchCV, cross_val_score
-        from sklearn.pipeline import Pipeline
+        from sklearn.model_selection import cross_val_score
         from sklearn.preprocessing import LabelEncoder
-        from sklearn.svm import LinearSVC
 
         t0 = time.time()
         with self.engine.connect() as c:
@@ -823,7 +839,7 @@ class OpsTools:
         if min_cnt < 2:
             return {"error": "salah satu kelas hanya punya 1 contoh; retrain dibatalkan"}
         cv = max(2, min(5, min_cnt))
-        cand = clone(cur_pipe).fit(train[TEXT_COL], y)      
+        cand = clone(cur_pipe).fit(train[TEXT_COL], y)      # pengaturan TF-IDF dan SVM sama dengan model aktif
         cv_f1 = float(cross_val_score(clone(cur_pipe), train[TEXT_COL], y,
                                       cv=cv, scoring="f1_macro", n_jobs=1).mean())
 
@@ -848,7 +864,18 @@ class OpsTools:
             result["versi"] = save_model(self.engine, cand, le, metrics)
             self.deploy(cand, le, metrics)
             result["relabel"] = self._relabel_all()
-            result["durasi_detik"] = round(time.time() - t0, 1)
+
+        result["durasi_detik"] = round(time.time() - t0, 1)     # sudah termasuk pelabelan ulang bila model dipasang
+        result["waktu_utc"] = _now()
+        try:
+            with self.engine.begin() as c:
+                c.execute(insert(retrain_log).values(
+                    id=uuid.uuid4().hex, ts=result["waktu_utc"], durasi_detik=result["durasi_detik"],
+                    dipasang=int(bool(ok)), f1_lama=result["f1_model_lama"], f1_kandidat=result["f1_kandidat"],
+                    recall_neg_lama=result["recall_negatif_lama"], recall_neg_kandidat=result["recall_negatif_kandidat"],
+                    contoh_latih=result["contoh_latih"], versi=result.get("versi")))
+        except Exception as e:
+            print(f"[ops] catat retrain_log gagal: {e}", flush=True)
         self._kv_set("last_retrain_count", len(corr))          # sukses atau tidak, jangan diulang tiap run
         self._kv_set("last_retrain_result", json.dumps(result))
         return result
@@ -974,6 +1001,7 @@ def _jalankan(tools, log):
     if gagal:
         raise RuntimeError(f"Langkah gagal: {', '.join(gagal)}\n{ringkasan}")
     return ringkasan
+
 
 async def run_routine(tools, *_abaikan, **_kw):
     """Jalankan satu rutinitas dan catat hasilnya di tabel agent_runs (argumen tambahan diabaikan agar
