@@ -794,7 +794,8 @@ class OpsTools:
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import LabelEncoder
         from sklearn.svm import LinearSVC
-        
+
+        t0 = time.time()
         with self.engine.connect() as c:
             corr = c.execute(select(reviews.c.clean, reviews.c.corrected_label)
                              .where(reviews.c.corrected_label.is_not(None), reviews.c.clean.is_not(None))).all()
@@ -847,6 +848,7 @@ class OpsTools:
             result["versi"] = save_model(self.engine, cand, le, metrics)
             self.deploy(cand, le, metrics)
             result["relabel"] = self._relabel_all()
+            result["durasi_detik"] = round(time.time() - t0, 1)
         self._kv_set("last_retrain_count", len(corr))          # sukses atau tidak, jangan diulang tiap run
         self._kv_set("last_retrain_result", json.dumps(result))
         return result
