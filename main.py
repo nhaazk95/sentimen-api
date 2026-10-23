@@ -26,9 +26,11 @@ from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export
                        run_routine, ops_running, agent_runs, last_run_info,
                        reviews as REVIEWS_TBL, rs_info)
 
-# Pipeline utuh (TF-IDF + SVM) -- satu file
-pipeline = joblib.load('svm_pipeline.pkl')
-label_encoder = joblib.load('label_encoder.pkl')
+# ============================================================
+# PERBAIKAN: Memuat model final (hasil eksperimen 0.7837)
+# ============================================================
+pipeline = joblib.load('svm_pipeline_final.pkl')
+label_encoder = joblib.load('label_encoder_final.pkl')
 slang_dict = load_slang_dict('slang_dict.json')
 
 # Metrics dibaca dari file supaya otomatis ter-update saat retraining
@@ -620,7 +622,7 @@ def rs_ringkasan(topik: str = "", rs: str = "", batas: int = 8):
 
 @app.get("/ulasan/per-jam")
 def ulasan_per_jam(jam: int, rs: str = "", batas: int = 8):
-    """Jumlah dan isi ulasan yang ditulis pada jam tertentu (WIB) beserta label sentimen."""
+    """Jumlah dan isi ulasan yang ditulis pada jam tertentu (WIB) beserta label sentimennya."""
     r = OPS.ulasan_per_jam(jam, rs, batas)
     if "error" in r:
         raise HTTPException(status_code=400, detail=r["error"])
