@@ -781,6 +781,9 @@ class OpsTools:
         out = pd.DataFrame({TEXT_COL: txt, LABEL_COL: df[LABEL_COL]}).dropna()
         out = out[out[TEXT_COL].str.strip().ne("") & out[TEXT_COL].ne("nan")]
         return out.reset_index(drop=True)
+        
+    from sklearn.base import clone
+    from sklearn.model_selection import cross_val_score
 
     def retrain_model(self):
         import pandas as pd
@@ -817,12 +820,10 @@ class OpsTools:
         min_cnt = min(Counter(y).values())
         if min_cnt < 2:
             return {"error": "salah satu kelas hanya punya 1 contoh; retrain dibatalkan"}
-        grid = GridSearchCV(
-            Pipeline([("tfidf", TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True)),
-                      ("svm", LinearSVC(class_weight="balanced"))]),
-            {"svm__C": [0.5, 1.0, 2.0]}, cv=max(2, min(5, min_cnt)), scoring="f1_macro", n_jobs=1)
-        grid.fit(train[TEXT_COL], y)
-        cand = grid.best_estimator_
+        cv = max(2, min(5, min_cnt))
+        cand = clone(cur_pipe).fit(train[TEXT_COL], y)      
+        cv_f1 = float(cross_val_score(clone(cur_pipe), train[TEXT_COL], y,
+                                      cv=cv, scoring="f1_macro", n_jobs=1).mean())
 
         texts, truth = list(test[TEXT_COL]), list(test[LABEL_COL])
         cand_pred = list(le.inverse_transform(cand.predict(texts)))
@@ -841,7 +842,7 @@ class OpsTools:
             metrics = {"accuracy": round(accuracy_score(truth, cand_pred), 4),
                        "precision_macro": round(precision_score(truth, cand_pred, average="macro", zero_division=0), 4),
                        "recall_macro": round(recall_score(truth, cand_pred, average="macro", zero_division=0), 4),
-                       "f1_macro": round(float(f1c), 4), "cv_f1_macro": round(float(grid.best_score_), 4)}
+                       "f1_macro": round(float(f1c), 4), "cv_f1_macro": round(cv_f1, 4)}
             result["versi"] = save_model(self.engine, cand, le, metrics)
             self.deploy(cand, le, metrics)
             result["relabel"] = self._relabel_all()
