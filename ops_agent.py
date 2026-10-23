@@ -787,13 +787,14 @@ class OpsTools:
 
     def retrain_model(self):
         import pandas as pd
+        from sklearn.base import clone
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
-        from sklearn.model_selection import GridSearchCV
+        from sklearn.model_selection import GridSearchCV, cross_val_score
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import LabelEncoder
         from sklearn.svm import LinearSVC
-
+        
         with self.engine.connect() as c:
             corr = c.execute(select(reviews.c.clean, reviews.c.corrected_label)
                              .where(reviews.c.corrected_label.is_not(None), reviews.c.clean.is_not(None))).all()
