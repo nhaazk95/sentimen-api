@@ -646,6 +646,11 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
                           headers=headers, 
                           json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan})
         
+        # --- TAMBAHKAN BARIS INI ---
+        import asyncio
+        await asyncio.sleep(5) 
+        # ---------------------------
+    
         # Ambil balasan
         res_act = await client.get(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", headers=headers)
         activities = res_act.json().get("activities", [])
