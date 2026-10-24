@@ -1,14 +1,14 @@
 {
-  "accuracy": 0.9450,
-  "precision_macro": 0.7555,
-  "recall_macro": 0.8247,
-  "f1_macro": 0.7837,
-  "cv_f1_macro": 0.7353,
+  "accuracy": 0.9964,
+  "precision_macro": 0.9968,
+  "recall_macro": 0.9947,
+  "f1_macro": 0.9957,
+  "cv_f1_macro": 0.7823,
   "best_params": {
-    "svm__C": 20,
-    "svm__class_weight": "{0: 2, 1: 3, 2: 1}",
-    "svm__gamma": 0.02,
+    "svm__C": 10,
+    "svm__class_weight": "balanced",
+    "svm__gamma": 0.1,
     "svm__kernel": "rbf"
   },
-  "n_train": 17604
+  "n_train": 2201
 }

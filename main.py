@@ -28,8 +28,8 @@ from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export
 # ============================================================
 # PERBAIKAN: Memuat model final (hasil eksperimen 0.7837)
 # ============================================================
-pipeline = joblib.load('svm_pipeline_final.pkl')
-label_encoder = joblib.load('label_encoder_final.pkl')
+pipeline = joblib.load('svm_pipeline.pkl')
+label_encoder = joblib.load('label_encoder.pkl')
 slang_dict = load_slang_dict('slang_dict.json')
 
 # Metrics dibaca dari file supaya otomatis ter-update saat retraining
