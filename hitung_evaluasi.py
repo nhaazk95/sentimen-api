@@ -19,9 +19,9 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score
 from preprocessing import full_preprocess, load_slang_dict
 
 LABELS = ["Negatif", "Netral", "Positif"]
-FILE = "sampel_label_terisi.csv"   # <-- pakai file HASIL pelabelan, bukan sampel_label.csv
-PIPE_PATH = "svm_pipeline.pkl"
-ENCODER_PATH = "label_encoder.pkl"
+FILE = "sampel_uji_seimbang.csv"  # <-- pakai file HASIL pelabelan, bukan sampel_label.csv
+PIPE_PATH = "svm_pipeline_final.pkl"        # <-- model final
+ENCODER_PATH = "label_encoder_final.pkl"    # <-- encoder final
 SLANG_PATH = "slang_dict.json"
 
 # Mapping fleksibel: apapun isi CSV, dinormalisasi ke 3 label valid

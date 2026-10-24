@@ -30,6 +30,44 @@ queries = {
                     - started_at::timestamptz))::numeric, 1) AS detik
         FROM agent_runs
         WHERE started_at >= '2026-10-17' ORDER BY started_at""",
+    "Ketepatan waktu (scraped_at -> ditandai)": """
+        SELECT r.rs_name, r.scraped_at, n.ts AS ditandai,
+            ROUND(EXTRACT(EPOCH FROM (n.ts::timestamptz
+                    - r.scraped_at::timestamptz))/60) AS menit
+        FROM reviews r JOIN notif_log n
+        ON n.review_id = r.review_id AND n.event = 'marked'
+        ORDER BY n.ts""",
+    "Ukuran data": """
+        SELECT legacy, COUNT(*) AS jumlah FROM reviews GROUP BY legacy""",
+    "Log langkah per run": """
+        SELECT started_at, SUBSTR(log, 1, 700) AS log FROM agent_runs
+        WHERE started_at BETWEEN '2026-10-20T22:00:00Z' AND '2026-10-21T12:00:00Z'
+        ORDER BY started_at""",
+    "Riwayat retrain": """
+            SELECT ts, durasi_detik, dipasang, versi FROM retrain_log ORDER BY ts""",
+        "Run dengan Apify gagal": """
+        SELECT started_at, status FROM agent_runs
+        WHERE log LIKE '%Apify gagal%' ORDER BY started_at""",
+    "Ulasan baru dan negatif per run": """
+        SELECT started_at,
+            (regexp_match(log, '''baru'': ([0-9]+)'))[1] AS baru,
+            (regexp_match(log, '''Negatif'': ([0-9]+)'))[1] AS negatif,
+            (log LIKE '%Apify gagal%') AS apify_gagal
+        FROM agent_runs WHERE started_at >= '2026-10-11' ORDER BY started_at""",
+    "Negatif belum diemail": """
+        SELECT COUNT(*) AS menunggu, MIN(scraped_at) AS tertua FROM reviews
+        WHERE LOWER(COALESCE(corrected_label, label)) = 'negatif' AND notified = 0""",
+    "Model aktif": """
+        SELECT version, created_at, active, metrics FROM models ORDER BY created_at""",
+    "Aktivitas notif_log": """
+        SELECT event, COUNT(*) AS baris, MAX(ts) AS terakhir
+        FROM notif_log GROUP BY event""",
+    "Cek dummy": """SELECT review_id, notified FROM reviews WHERE review_id LIKE 'TEST-%'""",
+    "Teks asli ulasan uji": """
+        SELECT rs_name, rating, published_at, text FROM reviews
+        WHERE scraped_at >= '2026-10-23T14:00:00Z'
+        AND LOWER(COALESCE(corrected_label, label)) = 'negatif'
+        ORDER BY scraped_at""",
 }
 
 for nama, q in queries.items():
