@@ -23,9 +23,8 @@ from sqlalchemy import select
 
 from preprocessing import full_preprocess, load_slang_dict
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
-                       run_routine, ops_running, agent_runs, last_run_info,
+                       run_routine, ops_running, agent_runs, last_run_info, _susun_email,
                        reviews as REVIEWS_TBL, rs_info)
-
 # ============================================================
 # PERBAIKAN: Memuat model final (hasil eksperimen 0.7837)
 # ============================================================
@@ -600,6 +599,21 @@ def ulasan_negatif_baru(batas: int = 20, x_agent_token: str = Header(default=Non
     _need_token(x_agent_token)
     return OPS.negatif_baru(batas)
 
+@app.get("/ulasan/email-html")
+def ulasan_email_html(x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    
+    # Ambil ulasan negatif yang belum dikirim (maksimal 50)
+    rows = OPS._pending_negative(50)
+    
+    if not rows:
+        return {"subjek": "Tidak ada ulasan negatif baru", "html": "<p>Tidak ada ulasan negatif baru saat ini.</p>"}
+        
+    # Panggil fungsi _susun_email untuk membuat HTML cantik
+    subjek, teks, html = _susun_email(rows)
+    
+    # Kembalikan dalam format JSON
+    return {"subjek": subjek, "html": html}
 
 class TandaiInput(BaseModel):
     review_ids: list[str]
