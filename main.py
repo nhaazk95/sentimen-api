@@ -618,6 +618,49 @@ def ulasan_email_html(x_agent_token: str = Header(default=None)):
 class TandaiInput(BaseModel):
     review_ids: list[str]
 
+import httpx
+
+@app.get("/ulasan/copilot-email")
+async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    
+    # 1. Ambil 1 ulasan negatif
+    rows = OPS._pending_negative(1)
+    if not rows:
+        return {"subjek": "Tidak ada ulasan", "html": "<p>Tidak ada ulasan negatif.</p>"}
+    
+    ulasan = rows[0]
+    teks_ulasan = f"RS: {ulasan.rs_name}. Rating: {ulasan.rating}. Ulasan: {ulasan.text}"
+    
+    # 2. Panggil Copilot Studio
+    DIRECT_LINE_SECRET = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview" # <--- GANTI INI
+    headers = {"Authorization": f"Bearer {DIRECT_LINE_SECRET}"}
+    
+    async with httpx.AsyncClient() as client:
+        # Buka percakapan
+        res = await client.post("https://directline.botframework.com/v3/directline/conversations", headers=headers)
+        conv_id = res.json().get("conversationId")
+        
+        # Kirim pesan
+        await client.post(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", 
+                          headers=headers, 
+                          json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan})
+        
+        # Ambil balasan
+        res_act = await client.get(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", headers=headers)
+        activities = res_act.json().get("activities", [])
+        
+        balasan_agen = "Maaf, agen tidak merespons."
+        for act in activities:
+            if act.get("from", {}).get("id") != "user1" and act.get("type") == "message":
+                balasan_agen = act.get("text")
+                break
+
+    # 3. Format hasil
+    subjek = f"[Geosentimen] Ulasan Negatif dari {ulasan.rs_name}"
+    html = balasan_agen.replace("\n", "<br>") 
+    
+    return {"subjek": subjek, "html": html}
 
 @app.post("/ulasan/tandai-terkirim")
 def ulasan_tandai_terkirim(data: TandaiInput, x_agent_token: str = Header(default=None)):
