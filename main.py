@@ -636,7 +636,7 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
     html = ""
     
     try:
-        DIRECT_LINE_SECRET = ""https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview""
+        DIRECT_LINE_SECRET = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview"
         headers = {"Authorization": f"Bearer {DIRECT_LINE_SECRET}"}
         
         # Paksa batas waktu total 5 detik untuk seluruh proses Direct Line
