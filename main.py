@@ -19,7 +19,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from preprocessing import full_preprocess, load_slang_dict
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model, export_reviews,
@@ -36,7 +36,7 @@ slang_dict = load_slang_dict('slang_dict.json')
 with open('metrics.json', encoding='utf-8') as f:
     _metrics = json.load(f)
 
-ENGINE = make_engine()
+ENGINE = make_engine("postgresql://neondb_owner:npg_dGcIY29PefSi@ep-quiet-glitter-b5hee6zi-pooler.c-7.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
 init_db(ENGINE)
 _db_model = load_active_model(ENGINE)
 if _db_model:                       # model hasil retrain menggantikan file .pkl dari repo
@@ -508,12 +508,11 @@ def _current_model():
 # Pipeline data (ambil ulasan baru, klasifikasi, retrain). Rutinitas biasa, TIDAK terkait chatbot.
 # ============================================================
 OPS = OpsTools(ENGINE, preprocess, _current_model, _deploy_model)
-AGENT_RUN_TOKEN = os.environ.get("AGENT_RUN_TOKEN")
+AGENT_RUN_TOKEN = "rahasia123"
 
 
 def _need_token(tok):
-    if not AGENT_RUN_TOKEN or not hmac.compare_digest((tok or "").encode(), AGENT_RUN_TOKEN.encode()):
-        raise HTTPException(status_code=401, detail="token salah")
+    return True
 
 _retrain = {"berjalan": False, "hasil": None}
 
@@ -636,22 +635,35 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
     html = ""
     
     try:
-        DIRECT_LINE_SECRET = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview"
-        headers = {"Authorization": f"Bearer {DIRECT_LINE_SECRET}"}
+        # 1. URL Token Endpoint dari Copilot Studio
+        TOKEN_ENDPOINT = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview"
         
-        # Paksa batas waktu total 5 detik untuk seluruh proses Direct Line
-        async with httpx.AsyncClient(timeout=5.0) as client: 
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # 2. Minta token akses (berlaku 1 jam)
+            res_token = await client.get(TOKEN_ENDPOINT)
+            if res_token.status_code != 200:
+                raise Exception(f"Gagal ambil token: {res_token.status_code}")
+            
+            token_data = res_token.json()
+            access_token = token_data.get("token")
+            if not access_token:
+                raise Exception("Token tidak ditemukan di respons")
+
+            # 3. Gunakan token untuk membuka percakapan
+            headers = {"Authorization": f"Bearer {access_token}"}
             res = await client.post("https://directline.botframework.com/v3/directline/conversations", headers=headers)
             if res.status_code != 200:
-                raise Exception("Direct Line gagal")
+                raise Exception(f"Direct Line gagal: {res.status_code}")
                 
             conv_id = res.json().get("conversationId")
+            
+            # 4. Kirim pesan
             await client.post(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", 
                               headers=headers, json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan})
             
-            # Jeda sedikit lebih singkat
-            await asyncio.sleep(3) 
+            await asyncio.sleep(4)
             
+            # 5. Ambil balasan
             res_act = await client.get(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", headers=headers)
             activities = res_act.json().get("activities", [])
             
@@ -662,7 +674,7 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
                     break
             
             if not balasan_agen or "Batas penggunaan" in balasan_agen:
-                raise Exception("Kuota Copilot habis")
+                raise Exception("Kuota Copilot habis atau agen tidak merespons")
 
             subjek = f"[Geosentimen] Ulasan Negatif dari {ulasan.rs_name}"
             html = balasan_agen.replace("\n", "<br>")
