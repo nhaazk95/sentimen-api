@@ -636,21 +636,23 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
     html = ""
     
     try:
-        DIRECT_LINE_SECRET = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview"
+        DIRECT_LINE_SECRET = ""https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview""
         headers = {"Authorization": f"Bearer {DIRECT_LINE_SECRET}"}
         
-        async with httpx.AsyncClient() as client:
-            res = await client.post("https://directline.botframework.com/v3/directline/conversations", headers=headers, timeout=10)
+        # Paksa batas waktu total 5 detik untuk seluruh proses Direct Line
+        async with httpx.AsyncClient(timeout=5.0) as client: 
+            res = await client.post("https://directline.botframework.com/v3/directline/conversations", headers=headers)
             if res.status_code != 200:
                 raise Exception("Direct Line gagal")
                 
             conv_id = res.json().get("conversationId")
             await client.post(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", 
-                              headers=headers, json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan}, timeout=10)
+                              headers=headers, json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan})
             
-            await asyncio.sleep(5)
+            # Jeda sedikit lebih singkat
+            await asyncio.sleep(3) 
             
-            res_act = await client.get(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", headers=headers, timeout=10)
+            res_act = await client.get(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", headers=headers)
             activities = res_act.json().get("activities", [])
             
             balasan_agen = None
