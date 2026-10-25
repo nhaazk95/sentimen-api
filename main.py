@@ -625,7 +625,6 @@ import asyncio
 async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
     _need_token(x_agent_token)
     
-    # 1. Ambil 1 ulasan negatif
     rows = OPS._pending_negative(1)
     if not rows:
         return {"subjek": "Tidak ada ulasan", "html": "<p>Tidak ada ulasan negatif.</p>"}
@@ -633,28 +632,24 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
     ulasan = rows[0]
     teks_ulasan = f"RS: {ulasan.rs_name}. Rating: {ulasan.rating}. Ulasan: {ulasan.text}"
     
-    # 2. Coba panggil Copilot Studio
+    subjek = ""
+    html = ""
+    
     try:
-        DIRECT_LINE_SECRET = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview" # <--- WAJIB GANTI DENGAN SECRET ASLI
+        DIRECT_LINE_SECRET = "https://default90affe0fc2a34108bb986ceb4e94ef.15.environment.api.powerplatform.com/powervirtualagents/botsbyschema/new_AnalisisGeosentimen/directline/token?api-version=2022-03-01-preview"
         headers = {"Authorization": f"Bearer {DIRECT_LINE_SECRET}"}
         
         async with httpx.AsyncClient() as client:
-            # Buka percakapan
             res = await client.post("https://directline.botframework.com/v3/directline/conversations", headers=headers, timeout=10)
             if res.status_code != 200:
                 raise Exception("Direct Line gagal")
                 
             conv_id = res.json().get("conversationId")
-            
-            # Kirim pesan
             await client.post(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", 
-                              headers=headers, 
-                              json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan}, timeout=10)
+                              headers=headers, json={"type": "message", "from": {"id": "user1"}, "text": teks_ulasan}, timeout=10)
             
-            # Tunggu agen berpikir
-            await asyncio.sleep(5) 
+            await asyncio.sleep(5)
             
-            # Ambil balasan
             res_act = await client.get(f"https://directline.botframework.com/v3/directline/conversations/{conv_id}/activities", headers=headers, timeout=10)
             activities = res_act.json().get("activities", [])
             
@@ -664,20 +659,22 @@ async def ulasan_copilot_email(x_agent_token: str = Header(default=None)):
                     balasan_agen = act.get("text")
                     break
             
-            # Kalau agen tidak merespons atau kena limit
             if not balasan_agen or "Batas penggunaan" in balasan_agen:
-                raise Exception("Kuota Copilot habis atau tidak merespons")
+                raise Exception("Kuota Copilot habis")
 
             subjek = f"[Geosentimen] Ulasan Negatif dari {ulasan.rs_name}"
             html = balasan_agen.replace("\n", "<br>")
-            return {"subjek": subjek, "html": html}
-
+            
     except Exception as e:
-        # 3. MODE FALLBACK (JIKA COPILOT ERROR / LIMIT)
         print(f"[fallback] Copilot error: {e}. Menggunakan mode template HTML.")
-        # Panggil fungsi _susun_email yang sudah ada di ops_agent.py
-        subjek, teks, html = _susun_email([ulasan]) 
-        return {"subjek": subjek, "html": html}
+        subjek, teks, html = _susun_email([ulasan])
+        
+    # --- BARU: TANDAI LANGSUNG DI DATABASE ---
+    with ENGINE.begin() as c:
+        c.execute(update(REVIEWS_TBL).where(REVIEWS_TBL.c.review_id == ulasan.review_id).values(notified=1))
+    # -----------------------------------------
+        
+    return {"subjek": subjek, "html": html}
 
 @app.post("/ulasan/tandai-terkirim")
 def ulasan_tandai_terkirim(data: TandaiInput, x_agent_token: str = Header(default=None)):
