@@ -670,10 +670,9 @@ class OpsTools:
         self._log_notif("marked", ids)
         return {"ditandai": n}
 
-    # ---- 4c. ulasan menurut jam tulis (untuk pertanyaan "berapa komentar jam 08.00?")
+  
     def ulasan_per_jam(self, jam, rs="", tanggal="", batas=8):
-        """Ulasan yang ditulis pada jam tertentu (WIB). Jam 8 = 08.00-08.59. 
-        Jika tanggal diisi (format YYYY-MM-DD), filter berdasarkan tanggal tersebut."""
+        """Ulasan yang ditulis pada jam tertentu (WIB)."""
         try:
             jam = int(jam)
         except (TypeError, ValueError):
@@ -682,25 +681,23 @@ class OpsTools:
             return {"error": "jam harus 0-23"}
         batas = _clamp(batas, 1, 15, 8)
         q = select(reviews.c.rs_name, reviews.c.rating, reviews.c.text, reviews.c.published_at,
-                   reviews.c.label, reviews.c.corrected_label).where(
+                reviews.c.label, reviews.c.corrected_label).where(
             reviews.c.published_at.is_not(None), reviews.c.label.is_not(None))
         
         rs = (rs or "").strip()
         if rs:
             q = q.where(func.lower(reviews.c.rs_name).contains(rs.lower(), autoescape=True))
             
-        # --- TAMBAHAN FILTER TANGGAL ---
+        # --- TAMBAHKAN FILTER TANGGAL ---
         if tanggal:
             try:
-                # Asumsi input tanggal dari user: YYYY-MM-DD
                 q = q.where(reviews.c.published_at.startswith(tanggal))
             except Exception as e:
-                return {"error": f"Format tanggal salah: {e}. Gunakan YYYY-MM-DD."}
+                return {"error": f"Format tanggal salah: {e}"}
         # -------------------------------
 
         with self.engine.connect() as c:
             rows = c.execute(q).all()
-        
         # ... (sisa kode di bawahnya tetap sama) ...
 
     # ---- 4d. ringkasan per RS: rating + sebaran sentimen, dan (bila ada topik) berapa ulasan yang menyebut topik itu
