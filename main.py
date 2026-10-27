@@ -619,7 +619,6 @@ def rs_ringkasan(topik: str = "", rs: str = "", batas: int = 8):
 
 @app.get("/ulasan/per-jam")
 def ulasan_per_jam(jam: int, rs: str = "", tanggal: str = "", batas: int = 8):
-    """Jumlah dan isi ulasan yang ditulis pada jam tertentu (WIB) beserta label sentimennya."""
     r = OPS.ulasan_per_jam(jam, rs, tanggal, batas)
     if "error" in r:
         raise HTTPException(status_code=400, detail=r["error"])

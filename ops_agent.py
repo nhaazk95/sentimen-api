@@ -688,13 +688,12 @@ class OpsTools:
         if rs:
             q = q.where(func.lower(reviews.c.rs_name).contains(rs.lower(), autoescape=True))
             
-        # --- TAMBAHKAN FILTER TANGGAL ---
         if tanggal:
             try:
-                q = q.where(reviews.c.published_at.startswith(tanggal))
+                # Gunakan LIKE agar cocok dengan format apapun (T atau spasi)
+                q = q.where(reviews.c.published_at.like(f"{tanggal}%"))
             except Exception as e:
                 return {"error": f"Format tanggal salah: {e}"}
-        # -------------------------------
 
         with self.engine.connect() as c:
             rows = c.execute(q).all()
