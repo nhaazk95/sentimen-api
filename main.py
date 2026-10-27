@@ -620,6 +620,8 @@ def rs_ringkasan(topik: str = "", rs: str = "", batas: int = 8):
 @app.get("/ulasan/per-jam")
 def ulasan_per_jam(jam: int, rs: str = "", tanggal: str = "", batas: int = 8):
     r = OPS.ulasan_per_jam(jam, rs, tanggal, batas)
+    if r is None:
+        raise HTTPException(status_code=500, detail="Fungsi ulasan_per_jam mengembalikan None. Periksa ops_agent.py.")
     if "error" in r:
         raise HTTPException(status_code=400, detail=r["error"])
     return r
