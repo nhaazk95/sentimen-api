@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import Counter, defaultdict
 from typing import Optional
 
-import httpx  # <-- TAMBAHKAN INI UNTUK COPILOT
+import httpx  
 import joblib
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
@@ -36,8 +36,7 @@ slang_dict = load_slang_dict('slang_dict.json')
 
 with open('metrics.json', encoding='utf-8') as f:
     _metrics = json.load(f)
-
-# --- KONEKSI DATABASE (KEMBALI KE .env) ---
+    
 ENGINE = make_engine() 
 init_db(ENGINE)
 _db_model = load_active_model(ENGINE)
