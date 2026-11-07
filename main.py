@@ -10,7 +10,7 @@ import time
 import traceback
 from collections import Counter, defaultdict
 from typing import Optional
-
+from fastapi.staticfiles import StaticFiles
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,6 +48,10 @@ def preprocess(text):
     return bersihkan(text)
 
 app = FastAPI()
+
+if not os.path.exists("static"):
+    os.makedirs("static")
+app.mount("/dashboard", StaticFiles(directory="static", html=True), name="static")
 
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(GZipMiddleware, minimum_size=1000)
