@@ -373,6 +373,25 @@ async def agent_run(background: BackgroundTasks,
     background.add_task(_run_dan_muat_ulang)
     return {"status": "dimulai"}
 
+@app.post("/agent/test-email-dummy")
+def test_email_dummy(x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    
+    # 1. Paksa labeli ulasan dummy
+    try:
+        # Kita panggil fungsi internal untuk melabeli ulasan yang belum punya label
+        OPS.label_ulasan(batas=100)
+    except Exception as e:
+        print("Gagal melabeli:", e)
+        
+    # 2. Paksa kirim email
+    try:
+        # Buat ringkasan otomatis (tanpa Groq)
+        ringkasan = "Ini adalah email uji coba (dummy) dari sistem Geosentimen."
+        res = OPS.kirim_email_negatif(ringkasan=ringkasan)
+        return {"status": "selesai", "hasil_email": res}
+    except Exception as e:
+        return {"status": "gagal", "error": str(e)}
 
 @app.get("/agent/status")
 def agent_status(x_agent_token: str = Header(default=None)):
