@@ -1,4 +1,4 @@
-"""ops_agent.py — agen operasional Geosentimen RS Banyumas (versi bersih)."""
+"""ops_agent.py — agen operasional Geosentimen RS Banyumas (versi bersih tanpa Telegram)."""
 import asyncio
 import hashlib
 import html as _html
@@ -588,7 +588,7 @@ class OpsTools:
                 "f1_macro_model_aktif": metrics.get("f1_macro"),
                 "retrain_terakhir": self._kv_get("last_retrain_result", "belum pernah")}
 
-    # ---- 2. ambil ulasan (dengan alert telegram instan untuk rating <= 2)
+    # ---- 2. ambil ulasan
     def ambil_ulasan_baru(self, maks_per_rs=DEFAULT_MAX_REVIEWS):
         token = os.environ.get("APIFY_TOKEN")
         if not token:
@@ -656,57 +656,11 @@ class OpsTools:
             except Exception as e:
                 labeled = {"error": f"pelabelan gagal: {e}"}
 
-        # alert Telegram instan untuk rating <= 2 (paralel email harian)
-        alert = {"dikirim": 0}
-        if new:
-            try:
-                neg_low = [n for n in new if (n.get("rating") or 5) <= 2]
-                if neg_low:
-                    alert = self._kirim_alert_rating_rendah(neg_low)
-            except Exception as e:
-                alert = {"error": str(e)}
-
         return {"dilabeli_otomatis": labeled, "ulasan_diterima": total,
                 "baru": len(new), "sudah_ada": len(cand) - len(new),
                 "tanpa_teks_dilewati": notext, "di_luar_indonesia_dibuang": luar,
                 "sejak_tanggal": since,
-                "baru_per_rs": dict(Counter(v["rs_name"] for v in new)),
-                "alert_telegram": alert}
-
-    def _kirim_alert_rating_rendah(self, rows):
-        """Kirim ringkasan cepat ke Telegram untuk ulasan rating <= 2. Return dict status."""
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        chat = os.environ.get("TELEGRAM_CHAT_ID")
-        if not (token and chat):
-            return {"skip": "telegram belum diset"}
-        lines = [f"⚠️ {len(rows)} ulasan rating ≤ 2 baru:"]
-        by = defaultdict(list)
-        for r in rows:
-            by[r["rs_name"]].append(r)
-        for rs, items in list(by.items())[:8]:
-            lines.append(f"• <b>{_html.escape(rs)}</b> ({len(items)})")
-            for it in items[:2]:
-                lines.append("  " + _html.escape(_potong(it["text"], 120)))
-        text = "\n".join(lines)
-        return self._send_telegram(text)
-
-    def _send_telegram(self, text):
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        chat = os.environ.get("TELEGRAM_CHAT_ID")
-        if not (token and chat):
-            return {"skip": "telegram belum diset"}
-        import httpx
-        try:
-            r = httpx.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                           json={"chat_id": chat, "text": text,
-                                 "parse_mode": "HTML",
-                                 "disable_web_page_preview": True}, timeout=10)
-            ok = r.status_code == 200 and r.json().get("ok")
-            return {"dikirim": 1 if ok else 0,
-                    "status": r.status_code,
-                    **({} if ok else {"detail": r.text[:200]})}
-        except Exception as e:
-            return {"error": str(e)}
+                "baru_per_rs": dict(Counter(v["rs_name"] for v in new))}
 
     # ---- 3. label SVM + tag topik
     def _predict(self, clean_texts):
