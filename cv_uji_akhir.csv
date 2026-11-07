@@ -1,0 +1,4 @@
+Model,F1-macro uji,Recall negatif uji,Accuracy uji
+Logistic Regression,0.8312,0.9419,0.9663
+SVM linear,0.8534,0.9128,0.9711
+SVM rbf,0.7955,0.936,0.9659

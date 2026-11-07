@@ -1,0 +1,6 @@
+Model,Class weight,Undersampling,Oversampling
+SVM,0.0003,-0.1759,-0.0008
+Logistic Regression,-0.0126,-0.1847,-0.008
+Random Forest,0.0148,-0.1386,0.0257
+Naive Bayes,0.0946,0.0355,0.1123
+Complement NB,,-0.0159,0.0369

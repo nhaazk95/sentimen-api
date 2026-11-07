@@ -1,0 +1,19 @@
+Metrik,Perbandingan,Selisih,CI95_bawah,CI95_atas,p_NadeauBengio,p_Holm,p_Wilcoxon,Vonis
+f1_macro,Tanpa penanganan - Class weight,-0.0286,-0.0521,-0.0051,0.0192,0.0576,0.0,SETARA
+f1_macro,Tanpa penanganan - Undersampling,0.0966,0.0708,0.1225,0.0,0.0,0.0,Tanpa penanganan lebih baik
+f1_macro,Tanpa penanganan - Oversampling,-0.029,-0.0532,-0.0049,0.0206,0.0576,0.0,SETARA
+f1_macro,Class weight - Undersampling,0.1252,0.1038,0.1466,0.0,0.0,0.0,Class weight lebih baik
+f1_macro,Class weight - Oversampling,-0.0004,-0.0039,0.003,0.7886,0.7886,0.2914,SETARA
+f1_macro,Undersampling - Oversampling,-0.1257,-0.1467,-0.1046,0.0,0.0,0.0,Oversampling lebih baik
+rec_neg,Tanpa penanganan - Class weight,-0.0014,-0.0134,0.0106,0.8125,1.0,0.543,SETARA
+rec_neg,Tanpa penanganan - Undersampling,-0.0087,-0.0349,0.0175,0.4984,1.0,0.0718,SETARA
+rec_neg,Tanpa penanganan - Oversampling,-0.0013,-0.0144,0.0118,0.8369,1.0,0.5257,SETARA
+rec_neg,Class weight - Undersampling,-0.0073,-0.0312,0.0166,0.5327,1.0,0.0853,SETARA
+rec_neg,Class weight - Oversampling,0.0001,-0.0061,0.0062,0.9813,1.0,0.8361,SETARA
+rec_neg,Undersampling - Oversampling,0.0074,-0.0188,0.0336,0.5652,1.0,0.1485,SETARA
+rec_net,Tanpa penanganan - Class weight,-0.2315,-0.3001,-0.1629,0.0,0.0,0.0,Class weight lebih baik
+rec_net,Tanpa penanganan - Undersampling,-0.4684,-0.529,-0.4079,0.0,0.0,0.0,Undersampling lebih baik
+rec_net,Tanpa penanganan - Oversampling,-0.2381,-0.3077,-0.1685,0.0,0.0,0.0,Oversampling lebih baik
+rec_net,Class weight - Undersampling,-0.2369,-0.3018,-0.1721,0.0,0.0,0.0,Undersampling lebih baik
+rec_net,Class weight - Oversampling,-0.0066,-0.0232,0.0101,0.4243,0.4243,0.0173,SETARA
+rec_net,Undersampling - Oversampling,0.2304,0.1634,0.2973,0.0,0.0,0.0,Undersampling lebih baik

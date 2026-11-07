@@ -1,0 +1,5 @@
+Strategi,f1_macro rata-rata,rec_neg rata-rata,rec_net rata-rata,acc rata-rata,f1_macro std,rec_neg std,rec_net std,acc std
+Tanpa penanganan,0.7975,0.8823,0.4199,0.951,0.0195,0.0203,0.0536,0.0048
+Class weight,0.8261,0.8837,0.6514,0.9521,0.0153,0.0195,0.0527,0.0049
+Undersampling,0.7009,0.891,0.8883,0.8543,0.0101,0.0176,0.0353,0.0104
+Oversampling,0.8266,0.8836,0.6579,0.952,0.015,0.0216,0.0542,0.0048

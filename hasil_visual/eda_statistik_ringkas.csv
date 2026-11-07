@@ -1,0 +1,12 @@
+,Data latih,Data uji,Gabungan
+Jumlah ulasan,9101,2493,11594
+Teks unik,8634,2314,10862
+Duplikat (%),5.1,7.2,6.3
+Rata-rata kata,18.9,15.9,18.3
+Median kata,10.0,10.0,10.0
+Ulasan <=3 kata (%),13.2,14.4,13.4
+Mengandung emoji (%),14.2,12.1,13.7
+Rata-rata rating,4.53,4.74,4.57
+Jumlah RS,28,24,28
+Berlabel ambigu (%),0.87,0.68,0.83
+Periode,2013-07 s.d. 2026-08,2026-09 s.d. 2026-10,2013-07 s.d. 2026-10

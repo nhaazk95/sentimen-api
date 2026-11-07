@@ -1,0 +1,46 @@
+Model,Label sebenarnya,Prediksi,Jumlah
+SVM,negatif,negatif,154
+SVM,negatif,netral,0
+SVM,negatif,positif,9
+SVM,netral,negatif,1
+SVM,netral,netral,24
+SVM,netral,positif,13
+SVM,positif,negatif,7
+SVM,positif,netral,8
+SVM,positif,positif,2277
+Logistic Regression,negatif,negatif,156
+Logistic Regression,negatif,netral,1
+Logistic Regression,negatif,positif,6
+Logistic Regression,netral,negatif,1
+Logistic Regression,netral,netral,21
+Logistic Regression,netral,positif,16
+Logistic Regression,positif,negatif,11
+Logistic Regression,positif,netral,4
+Logistic Regression,positif,positif,2277
+Random Forest,negatif,negatif,134
+Random Forest,negatif,netral,1
+Random Forest,negatif,positif,28
+Random Forest,netral,negatif,2
+Random Forest,netral,netral,11
+Random Forest,netral,positif,25
+Random Forest,positif,negatif,6
+Random Forest,positif,netral,2
+Random Forest,positif,positif,2284
+Naive Bayes,negatif,negatif,160
+Naive Bayes,negatif,netral,0
+Naive Bayes,negatif,positif,3
+Naive Bayes,netral,negatif,3
+Naive Bayes,netral,netral,9
+Naive Bayes,netral,positif,26
+Naive Bayes,positif,negatif,44
+Naive Bayes,positif,netral,7
+Naive Bayes,positif,positif,2241
+Complement NB,negatif,negatif,161
+Complement NB,negatif,netral,0
+Complement NB,negatif,positif,2
+Complement NB,netral,negatif,4
+Complement NB,netral,netral,1
+Complement NB,netral,positif,33
+Complement NB,positif,negatif,45
+Complement NB,positif,netral,3
+Complement NB,positif,positif,2244

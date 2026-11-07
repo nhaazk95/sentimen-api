@@ -1,0 +1,7 @@
+Perbandingan,Metrik,Selisih,CI95_bawah,CI95_atas,p_NadeauBengio,p_Wilcoxon,Vonis
+SVM linear - Logistic Regression,f1_macro,-0.001,-0.0155,0.0135,0.8845,0.7915,SETARA (tidak berbeda nyata)
+SVM linear - Logistic Regression,rec_neg,-0.0421,-0.0591,-0.0252,0.0,0.0,Logistic Regression lebih baik
+SVM rbf - Logistic Regression,f1_macro,-0.0211,-0.0375,-0.0047,0.0138,0.0,Logistic Regression lebih baik
+SVM rbf - Logistic Regression,rec_neg,-0.0209,-0.0349,-0.007,0.005,0.0,Logistic Regression lebih baik
+SVM rbf - SVM linear,f1_macro,-0.0201,-0.0378,-0.0023,0.0284,0.0,SVM linear lebih baik
+SVM rbf - SVM linear,rec_neg,0.0212,0.008,0.0344,0.0029,0.0,SVM rbf lebih baik

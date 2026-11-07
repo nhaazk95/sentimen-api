@@ -1,0 +1,6 @@
+Model,Best Params,F1-macro,F1-macro (tanpa ambigu),Accuracy,Recall Neg,Precision Neg,Recall Netral,Precision Netral,Train (s),Pred (ms)
+SVM,"{'clf__C': 10, 'clf__kernel': 'linear'}",0.8751,0.8901,0.9848,0.9448,0.9506,0.6316,0.75,6689.3,2.978
+Logistic Regression,{'clf__C': 10},0.8636,0.8787,0.9844,0.9571,0.9286,0.5526,0.8077,92.4,0.218
+Random Forest,"{'clf__max_depth': 50, 'clf__n_estimators': 200}",0.7629,0.7712,0.9743,0.8221,0.9437,0.2895,0.7857,187.0,0.637
+Naive Bayes,{'clf__alpha': 0.1},0.7269,0.7327,0.9667,0.9816,0.7729,0.2368,0.5625,95.9,0.382
+Complement NB,{'clf__alpha': 0.5},0.6309,0.6323,0.9651,0.9877,0.7667,0.0263,0.25,63.0,0.193
