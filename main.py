@@ -19,7 +19,10 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
-
+from pydantic import BaseModel
+from ops_agent import reviews
+from sqlalchemy import insert
+import uuid
 from model_baru import bersihkan, muat_model_baru
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model,
                        export_reviews, run_routine, ops_running, agent_runs,
@@ -494,6 +497,27 @@ def ulasan_email_html(x_agent_token: str = Header(default=None)):
     subjek, teks, html = _susun_email(rows, ringkasan)
     return {"subjek": subjek, "html": html}
 
+class DummyInput(BaseModel):
+    rs_name: str
+    text: str
+    rating: float
+
+@app.post("/agent/inject-dummy")
+def inject_dummy(data: DummyInput, x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    rid = "dummy-" + uuid.uuid4().hex[:8]
+    with ENGINE.begin() as c:
+        c.execute(insert(reviews).values(
+            review_id=rid,
+            rs_name=data.rs_name,
+            text=data.text,
+            rating=data.rating,
+            published_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            scraped_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            notified=0,
+            legacy=0
+        ))
+    return {"status": "sukses", "review_id": rid}
 
 # ============================================================
 # Refresh manual
