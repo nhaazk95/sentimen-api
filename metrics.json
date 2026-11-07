@@ -1,14 +1,19 @@
 {
-  "accuracy": 0.9964,
-  "precision_macro": 0.9968,
-  "recall_macro": 0.9947,
-  "f1_macro": 0.9957,
-  "cv_f1_macro": 0.7823,
+  "accuracy": 0.9848,
+  "precision_macro": 0.897,
+  "recall_macro": 0.8566,
+  "f1_macro": 0.8751,
+  "cv_f1_macro": 0.8322,
+  "n_train": 8496,
+  "n_test": 2493,
   "best_params": {
-    "svm__C": 10,
-    "svm__class_weight": "balanced",
-    "svm__gamma": 0.1,
-    "svm__kernel": "rbf"
+    "clf__C": 10,
+    "clf__kernel": "linear",
+    "clf__class_weight": {
+      "negatif": 3.0,
+      "netral": 3.0,
+      "positif": 1.0
+    }
   },
-  "n_train": 2201
+  "keterangan": "SVM linear + TF-IDF kata & karakter; metrik dihitung pada data uji (bukan data latih); cv_f1_macro = F1-macro CV 5-lipatan saat tuning"
 }

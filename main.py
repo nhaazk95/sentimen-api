@@ -1,14 +1,4 @@
 """main.py — API FastAPI Geosentimen RS Banyumas.
-
-Chatbot pengguna DIHAPUS. Yang tersisa:
-- /predict                  klasifikasi SVM
-- /reviews.json             data untuk dashboard
-- /rs/*                     profil & jarak (dipakai dashboard)
-- /refresh, /refresh/status trigger scrape manual
-- /agent/*                  rutinitas ops (scrape, email, retrain, laporan bulanan)
-- /koreksi, /agent/ragu     human-in-the-loop
-- /health/agent             status kesehatan agen
-- /ulasan/negatif-baru, /ulasan/email-html  preview email
 """
 import asyncio
 import hmac
@@ -19,10 +9,8 @@ import re
 import time
 import traceback
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-import joblib
 import numpy as np
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,39 +20,32 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from preprocessing import full_preprocess, load_slang_dict
+from model_baru import bersihkan, muat_model_baru
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model,
                        export_reviews, run_routine, ops_running, agent_runs,
                        last_run_info, _susun_email,
                        reviews as REVIEWS_TBL, rs_info)
 
-# ============================================================
-# Model SVM
-# ============================================================
-pipeline = joblib.load('svm_pipeline.pkl')
-label_encoder = joblib.load('label_encoder.pkl')
-slang_dict = load_slang_dict('slang_dict.json')
-
-with open('metrics.json', encoding='utf-8') as f:
-    _metrics = json.load(f)
+# 1. Inisialisasi Model & Metrics (menggunakan adapter model baru)
+pipeline, label_encoder, _metrics = muat_model_baru("model_terbaik1.pkl", "metrics.json")
 
 ENGINE = make_engine()
 init_db(ENGINE)
+
 _db_model = load_active_model(ENGINE)
 if _db_model:
     pipeline, label_encoder, _metrics = _db_model
     print("[ops] memakai model dari database", flush=True)
 
-ACCURACY = _metrics['accuracy']
-PRECISION_MACRO = _metrics['precision_macro']
-RECALL_MACRO = _metrics['recall_macro']
-F1_MACRO = _metrics['f1_macro']
-CV_F1_MACRO = _metrics['cv_f1_macro']
+ACCURACY = _metrics.get('accuracy', 0)
+PRECISION_MACRO = _metrics.get('precision_macro', 0)
+RECALL_MACRO = _metrics.get('recall_macro', 0)
+F1_MACRO = _metrics.get('f1_macro', 0)
+CV_F1_MACRO = _metrics.get('cv_f1_macro', 0)
 
-
+# 2. Fungsi preprocess diarahkan ke bersihkan()
 def preprocess(text):
-    return full_preprocess(text, slang_dict)
-
+    return bersihkan(text)
 
 app = FastAPI()
 
@@ -204,27 +185,24 @@ def _tgl(v):
 def _load_rs_data(path):
     if not os.path.exists(path):
         print(f"[rs] {path} tidak ditemukan; lanjut tanpa data RS", flush=True)
-        return [], []
+        return []
     try:
         import pandas as pd
         sheets = pd.read_excel(path, sheet_name=None)
     except Exception as e:
         print(f"[rs] {path} tidak terbaca ({e}); lanjut tanpa data RS", flush=True)
-        return [], []
+        return []
     frames = [d for d in sheets.values() if _find_col(d, "Nama RS", "Nama Rumah Sakit")]
     if not frames:
         print("[rs] kolom 'Nama RS' tidak ditemukan", flush=True)
-        return [], []
+        return []
     df = pd.concat(frames, ignore_index=True)
     c_nama = _find_col(df, "Nama RS", "Nama Rumah Sakit")
     c_rat = _find_col(df, "Rating")
     c_addr = _find_col(df, "Lokasi Tempat", "Alamat", "Lokasi")
     c_lat = _find_col(df, "Latitude", "Lat")
     c_lon = _find_col(df, "Longitude", "Lng", "Lon", "Long")
-    c_text = _find_col(df, "Isi Ulasan", "Ulasan", "Review")
-    c_clean = _find_col(df, "clean_text")
-    c_date = _find_col(df, "Waktu Ulasan", "Tanggal", "Published At")
-
+    
     agg = defaultdict(lambda: {"n": 0, "rat": [], "addr": Counter(), "lat": [], "lon": []})
     for _, r in df.iterrows():
         nama = str(r[c_nama]).strip() if pd.notna(r[c_nama]) else ""
@@ -307,7 +285,6 @@ def rs_profil(nama: str):
 @app.get("/rs/terdekat")
 def rs_terdekat(daerah: str = "", lat: Optional[float] = None,
                 lng: Optional[float] = None, batas: int = 5):
-    """Tetap dipakai dashboard. Tanpa rute OSRM (hapus dependensi eksternal)."""
     origin = None
     if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
         origin = (lat, lng, "lokasi pengguna")
