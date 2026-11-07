@@ -26,6 +26,15 @@ from ops_agent import (OpsTools, make_engine, init_db, load_active_model,
                        last_run_info, _susun_email,
                        reviews as REVIEWS_TBL, rs_info)
 
+# Konfigurasi Groq untuk LLM ringkasan email
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
+BASE_PAYLOAD = {
+    "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+    "temperature": 0.2,
+    "max_tokens": 1500
+}
+
 # 1. Inisialisasi Model & Metrics (menggunakan adapter model baru)
 pipeline, label_encoder, _metrics = muat_model_baru("model_terbaik1.pkl", "metrics.json")
 
@@ -256,13 +265,13 @@ def reload_rs_info():
         INFO = {}
 
 
-async def _run_dan_muat_ulang(*args):
-    await run_routine(*args)
+async def _run_dan_muat_ulang():
+    # Panggil run_routine dengan argumen lengkap
+    await run_routine(OPS, GROQ_URL, GROQ_KEY, BASE_PAYLOAD)
     try:
         await asyncio.to_thread(reload_rs_info)
     except Exception as e:
         print(f"[rs] muat ulang info gagal: {e}", flush=True)
-
 
 try:
     reload_rs_info()
@@ -361,7 +370,7 @@ async def agent_run(background: BackgroundTasks,
         raise HTTPException(status_code=409, detail="rutinitas sedang berjalan")
     if _retrain["berjalan"]:
         raise HTTPException(status_code=409, detail="retrain sedang berjalan")
-    background.add_task(_run_dan_muat_ulang, OPS)
+    background.add_task(_run_dan_muat_ulang)
     return {"status": "dimulai"}
 
 
@@ -505,7 +514,7 @@ async def refresh(background: BackgroundTasks):
                             detail=f"Update baru saja dijalankan. Coba lagi sekitar "
                                    f"{int(sisa // 60) + 1} menit lagi.")
     _last_refresh = time.time()
-    background.add_task(_run_dan_muat_ulang, OPS)
+    background.add_task(_run_dan_muat_ulang)
     return {"status": "dimulai"}
 
 
