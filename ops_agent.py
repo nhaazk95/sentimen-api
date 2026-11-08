@@ -298,7 +298,7 @@ def _potong(text, n=700):
 
 
 # ------------------------------------------------------------------ email negatif harian
-def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi=""):
+def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs=None):
     esc = _html.escape
     by = defaultdict(list)
     for r in sorted(rows, key=lambda r: str(r.published_at or ""), reverse=True):
@@ -306,34 +306,31 @@ def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi=""):
     n, k = len(rows), len(by)
     now = _wib()
     waktu = f"{now.day} {BULAN[now.month - 1]} {now.year}, {now.hour:02d}.{now.minute:02d} WIB"
-    ringkasan = " ".join((ringkasan or "").split())[:800]
-    dashboard = os.environ.get("DASHBOARD_URL", "")
+    
+    # Kamus untuk mencari ringkasan per RS
+    map_ringkasan = {d["rs"]: d["ringkasan"] for d in (detail_rs or [])}
     
     warna_header = "#dc2626" if urgensi == "TINGGI" else ("#f59e0b" if urgensi == "SEDANG" else "#1e3a8a")
     label_urgensi = f"🚨 PRIORITAS {urgensi} 🚨" if urgensi == "TINGGI" else f"PRIORITAS {urgensi}"
-    
     subject = f"[{urgensi}] {n} Ulasan Negatif Baru - {k} RS"
 
-    # --- SUSUNAN TEKS BIASA ---
-    t = [f"ULASAN NEGATIF BARU ({urgensi})", waktu,
-         f"{n} ulasan negatif di {k} rumah sakit", ""]
-    if ringkasan:
-        t += ["RINGKASAN KELUHAN", ringkasan, ""]
+    # ... (SUSUNAN TEKS BIASA biarkan sama seperti sebelumnya) ...
+    t = [f"ULASAN NEGATIF BARU ({urgensi})", waktu, f"{n} ulasan negatif di {k} rumah sakit", ""]
     if rekomendasi:
-        t += ["REKOMENDASI TINDAKAN", rekomendasi, ""]
+        t += ["REKOMENDASI UMUM", rekomendasi, ""]
         
     for rs, items in by.items():
         t.append(f"== {rs} ({len(items)} ulasan) ==")
+        rsk = map_ringkasan.get(rs, "")
+        if rsk:
+            t.append(f"Ringkasan: {rsk}")
         for r in items:
             t += [f"[{_bintang(r.rating)[1]}] {_tgl(r.published_at)}", _potong(r.text), ""]
             
     t.append("Catatan: Sistem ini menggunakan Agentic AI. Prediksi sentimen dibuat otomatis oleh model SVM.")
-    if dashboard:
-        t.append(f"Dashboard: {dashboard}")
-        
     teks = "\n".join(t)
 
-    # --- SUSUNAN HTML ---
+    # ... (SUSUNAN HTML) ...
     def kartu(r):
         bintang, skor = _bintang(r.rating)
         isi = esc(_potong(r.text)).replace("\n", "<br>")
@@ -349,33 +346,32 @@ def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi=""):
 
     bagian = []
     for rs, items in by.items():
+        rsk = map_ringkasan.get(rs, "")
+        kotak_ringkasan = ""
+        if rsk:
+            kotak_ringkasan = (
+                '<div style="background:#fffbeb;border-left:3px solid #f59e0b;padding:10px 14px;margin:10px 0;border-radius:4px;">'
+                f'<div style="font-size:12px;font-weight:700;color:#92400e;">RINGKASAN {rs.upper()}</div>'
+                f'<div style="font-size:13px;color:#78350f;margin-top:4px;">{esc(rsk)}</div>'
+                '</div>'
+            )
+            
         bagian.append(
             '<tr><td style="padding:20px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
             f'<div style="font-size:16px;font-weight:700;color:#111827;">{esc(rs)}</div>'
-            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{len(items)} ulasan negatif</div></td></tr>'
+            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{len(items)} ulasan negatif</div>'
+            f'{kotak_ringkasan}</td></tr>'
             f'<tr><td style="padding:2px 28px 0 28px;">{"".join(kartu(r) for r in items)}</td></tr>')
             
-    box = ""
-    if ringkasan:
-        box = ('<tr><td style="padding:16px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
-               '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:12px 14px;">'
-               '<div style="font-size:12px;font-weight:700;color:#92400e;letter-spacing:.5px;">RINGKASAN KELUHAN</div>'
-               f'<div style="font-size:14px;line-height:1.6;color:#78350f;margin-top:4px;">{esc(ringkasan)}</div>'
-               '</div></td></tr>')
-               
     box_rekomendasi = ""
     if rekomendasi:
-        box_rekomendasi = ('<tr><td style="padding:10px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
+        box_rekomendasi = ('<tr><td style="padding:16px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
                            '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 14px;">'
-                           '<div style="font-size:12px;font-weight:700;color:#1e40af;letter-spacing:.5px;">REKOMENDASI TINDAKAN</div>'
+                           '<div style="font-size:12px;font-weight:700;color:#1e40af;letter-spacing:.5px;">REKOMENDASI UMUM MANAJEMEN</div>'
                            f'<div style="font-size:14px;line-height:1.6;color:#1e3a8a;margin-top:4px;">{esc(rekomendasi)}</div>'
                            '</div></td></tr>')
 
-    link = (f'<div style="margin-top:14px;"><a href="{esc(dashboard)}" '
-            'style="display:inline-block;background:#1e3a8a;color:#ffffff;text-decoration:none;'
-            'padding:10px 18px;border-radius:6px;font-weight:700;">Buka dashboard</a></div>'
-            if dashboard else "")
-            
+    link = ""
     html = (
         '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
@@ -391,11 +387,11 @@ def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi=""):
         '<tr><td style="padding:18px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
         f'<span style="font-size:30px;font-weight:700;color:#dc2626;">{n}</span>'
         f'<span style="font-size:14px;color:#374151;"> ulasan negatif di {k} rumah sakit</span></td></tr>'
-        + box + box_rekomendasi + "".join(bagian) +
+        + box_rekomendasi + "".join(bagian) +
         '<tr><td style="padding:22px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;">'
         '<div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;line-height:1.6;color:#6b7280;">'
-        'Sistem ini menggunakan Agentic AI. Prediksi sentimen dibuat oleh model SVM dan dapat keliru. Mohon periksa ulasan.'
-        + link + '</div></td></tr>'
+        'Sistem ini menggunakan Agentic AI. Mohon periksa ulasan.'
+        '</div></td></tr>'
         '</table></td></tr></table></body></html>')
     return subject, teks, html
 
@@ -789,7 +785,7 @@ class OpsTools:
             return ""
         return "Keluhan utama — " + "; ".join(parts[:6]) + "."
 
-    def kirim_email_negatif(self, ringkasan="", urgensi="RENDAH", rekomendasi=""):
+    def kirim_email_negatif(self, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs=None):
         to = (os.environ.get("NOTIFY_TO") or "").strip()
         if not to:
             return {"error": "NOTIFY_TO belum diset"}
@@ -810,7 +806,7 @@ class OpsTools:
         if not (ringkasan or "").strip():
             ringkasan = self._ringkasan_otomatis(rows)
         recipients = [x.strip() for x in to.split(",") if x.strip()]
-        subject, body, html = _susun_email(rows, ringkasan, urgensi, rekomendasi)
+        subject, body, html = _susun_email(rows, ringkasan, urgensi, rekomendasi, detail_rs)
         try:
             if provider == "smtp":
                 msg = EmailMessage()

@@ -372,12 +372,12 @@ def test_email_dummy(x_agent_token: str = Header(default=None)):
     
     items = [{"rs": r.rs_name, "rating": r.rating, "teks": (r.text or "")[:400]} for r in rows]
     prompt = (
-        "Berikut ulasan negatif baru dari pasien rumah sakit (JSON). Lakukan tiga tugas:\n"
-        "1. Tulis ringkasan 1-3 kalimat bahasa Indonesia santai tentang keluhan utama.\n"
-        "2. Tentukan tingkat urgensi (TINGGI / SEDANG / RENDAH). TINGGI jika menyangkut nyawa/kesalahan medis/amarah besar.\n"
-        "3. Beri 1 kalimat rekomendasi tindakan untuk manajemen.\n\n"
+        "Berikut ulasan negatif baru dari beberapa rumah sakit (JSON). Lakukan tiga tugas:\n"
+        "1. Buat ringkasan 1-2 kalimat bahasa Indonesia santai untuk MASING-MASING rumah sakit.\n"
+        "2. Tentukan tingkat urgensi keseluruhan (TINGGI / SEDANG / RENDAH) berdasarkan keluhan terparah.\n"
+        "3. Beri 1 kalimat rekomendasi tindakan umum untuk manajemen.\n\n"
         "Balas HANYA dengan format JSON valid seperti ini:\n"
-        '{"ringkasan": "...", "urgensi": "TINGGI/SEDANG/RENDAH", "rekomendasi": "..."}\n\n'
+        '{"urgensi": "TINGGI", "rekomendasi": "...", "detail_rs": [{"rs": "Nama RS", "ringkasan": "..."}]}\n\n'
         f"Data ulasan:\n{json.dumps(items, ensure_ascii=False)}"
     )
     
@@ -407,15 +407,16 @@ def test_email_dummy(x_agent_token: str = Header(default=None)):
             data = data[0]
             
         print(f"[DEBUG] Sukses dari Groq: {data}", flush=True)
-        
+
         # 4. Kirim email menggunakan hasil dari Groq
         res = OPS.kirim_email_negatif(
-            ringkasan=data.get("ringkasan", ""), 
+            ringkasan="", # Dikosongkan karena sudah pakai per RS
             urgensi=data.get("urgensi", "RENDAH"), 
-            rekomendasi=data.get("rekomendasi", "")
+            rekomendasi=data.get("rekomendasi", ""),
+            detail_rs=data.get("detail_rs", [])
         )
         return {"status": "selesai", "hasil_email": res, "ai_response": data}
-        
+    
     except Exception as e:
         print(f"[DEBUG] Exception: {str(e)}", flush=True)
         return {"status": "error_exception", "detail": str(e)}
