@@ -355,17 +355,63 @@ def rs_terdekat(daerah: str = "", lat: Optional[float] = None,
 @app.post("/agent/test-email-dummy")
 def test_email_dummy(x_agent_token: str = Header(default=None)):
     _need_token(x_agent_token)
+    
+    # 1. Paksa labeli ulasan dummy (jika ada yang belum berlabel)
+    print("[DEBUG] Melakukan pelabelan SVM...", flush=True)
+    OPS.label_ulasan(batas=100)
+    
+    # 2. Ambil ulasan negatif yang belum dikirim
+    rows = OPS._pending_negative(50)
+    if not rows:
+        return {"status": "gagal", "pesan": "Tidak ada ulasan negatif di database. Masukkan data dummy dulu."}
+        
+    # 3. Susun prompt untuk Groq
+    print("[DEBUG] Memanggil Groq secara sinkron...", flush=True)
+    import httpx
+    import json
+    
+    items = [{"rs": r.rs_name, "rating": r.rating, "teks": (r.text or "")[:400]} for r in rows]
+    prompt = (
+        "Berikut ulasan negatif baru dari pasien rumah sakit (JSON). Lakukan tiga tugas:\n"
+        "1. Tulis ringkasan 1-3 kalimat bahasa Indonesia santai tentang keluhan utama.\n"
+        "2. Tentukan tingkat urgensi (TINGGI / SEDANG / RENDAH). TINGGI jika menyangkut nyawa/kesalahan medis/amarah besar.\n"
+        "3. Beri 1 kalimat rekomendasi tindakan untuk manajemen.\n\n"
+        "Balas HANYA dengan format JSON valid seperti ini:\n"
+        '{"ringkasan": "...", "urgensi": "TINGGI/SEDANG/RENDAH", "rekomendasi": "..."}\n\n'
+        f"Data ulasan:\n{json.dumps(items, ensure_ascii=False)}"
+    )
+    
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
+    payload = {
+        "model": GROQ_MODEL, 
+        "messages": [{"role": "system", "content": "Kamu analis mutu RS."}, {"role": "user", "content": prompt}], 
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2
+    }
+    
     try:
-        res_label = OPS.label_ulasan(batas=100)
-        print("[dummy] Hasil label:", res_label, flush=True)
+        # Memanggil API Groq secara langsung (sinkron)
+        resp = httpx.post(GROQ_URL, headers=headers, json=payload, timeout=60)
+        
+        # Jika Groq error (misal API Key salah atau limit)
+        if resp.status_code != 200:
+            print(f"[DEBUG] Groq Error: {resp.text}", flush=True)
+            return {"status": "error_groq", "detail": resp.text}
+            
+        data = json.loads(resp.json()["choices"][0]["message"]["content"])
+        print(f"[DEBUG] Sukses dari Groq: {data}", flush=True)
+        
+        # 4. Kirim email menggunakan hasil dari Groq
+        res = OPS.kirim_email_negatif(
+            ringkasan=data.get("ringkasan", ""), 
+            urgensi=data.get("urgensi", "RENDAH"), 
+            rekomendasi=data.get("rekomendasi", "")
+        )
+        return {"status": "selesai", "hasil_email": res, "ai_response": data}
+        
     except Exception as e:
-        print("Gagal melabeli:", e, flush=True)
-    try:
-        ringkasan = "Ini adalah email uji coba (dummy) dari sistem Geosentimen."
-        res = OPS.kirim_email_negatif(ringkasan=ringkasan)
-        return {"status": "selesai", "hasil_email": res}
-    except Exception as e:
-        return {"status": "gagal", "error": str(e)}
+        print(f"[DEBUG] Exception: {str(e)}", flush=True)
+        return {"status": "error_exception", "detail": str(e)}
 
 # ============================================================
 # Ops agent

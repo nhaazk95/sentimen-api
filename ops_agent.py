@@ -1336,8 +1336,11 @@ async def _post(client, url, headers, payload, tries=6):
 async def run_agentic_routine(tools, url, api_key, http_client=None):
     """Menjalankan rutinitas menggunakan FULL AGENTIC AI (Groq sebagai otak)."""
     if _LOCK.locked():
+        print("[AGENTIC DEBUG] Gagal: _LOCK masih terkunci dari proses sebelumnya!", flush=True)
         return
+        
     async with _LOCK:
+        print("[AGENTIC DEBUG] Memulai inisialisasi...", flush=True)
         run_id = uuid.uuid4().hex[:12]
         with tools.engine.begin() as c:
             c.execute(update(agent_runs).where(agent_runs.c.status == "running").values(
@@ -1356,17 +1359,26 @@ async def run_agentic_routine(tools, url, api_key, http_client=None):
         ]
         
         log = []
+        status = "error"
+        report = "Tidak ada respons dari AI."
+        
         try:
             for step in range(5): # Maksimal 5 putaran berpikir
+                print(f"[AGENTIC DEBUG] Berpikir step ke-{step+1}...", flush=True)
+                
                 payload = {
-                    "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+                    "model": os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
                     "messages": messages,
                     "tools": AGENT_TOOLS_SCHEMA,
                     "tool_choice": "auto",
                     "temperature": 0.2
                 }
+                
                 resp = await http_client.post(url, headers=headers, json=payload)
+                
+                print(f"[AGENTIC DEBUG] Status Groq: {resp.status_code}", flush=True)
                 if resp.status_code != 200:
+                    print(f"[AGENTIC DEBUG] Isi error Groq: {resp.text}", flush=True)
                     raise Exception(f"Groq Error: {resp.text}")
                 
                 msg = resp.json()["choices"][0]["message"]
@@ -1376,8 +1388,12 @@ async def run_agentic_routine(tools, url, api_key, http_client=None):
                 if msg.get("tool_calls"):
                     for tc in msg["tool_calls"]:
                         fn_name = tc["function"]["name"]
-                        args = json.loads(tc["function"]["arguments"])
-                        print(f"[AGENTIC] AI memutuskan memanggil: {fn_name} dengan argumen {args}", flush=True)
+                        try:
+                            args = json.loads(tc["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            args = {}
+                            
+                        print(f"[AGENTIC DEBUG] AI memutuskan memanggil: {fn_name} dengan argumen {args}", flush=True)
                         
                         # Eksekusi alat Python berdasarkan perintah AI
                         if fn_name == "ambil_ulasan_baru":
@@ -1389,6 +1405,7 @@ async def run_agentic_routine(tools, url, api_key, http_client=None):
                         else:
                             res = {"error": "alat tidak dikenal"}
                             
+                        print(f"[AGENTIC DEBUG] Hasil alat {fn_name}: {str(res)[:200]}...", flush=True)
                         log.append({"alat": fn_name, "hasil": str(res)[:300]})
                         
                         # Kirim hasil alat kembali ke AI
@@ -1401,7 +1418,7 @@ async def run_agentic_routine(tools, url, api_key, http_client=None):
                 else:
                     # AI selesai berpikir dan memberikan jawaban akhir
                     final_report = msg.get("content", "Selesai.")
-                    print(f"[AGENTIC] Laporan Akhir AI: {final_report}", flush=True)
+                    print(f"[AGENTIC DEBUG] Laporan Akhir AI: {final_report}", flush=True)
                     status = "ok"
                     report = final_report
                     break
@@ -1412,6 +1429,7 @@ async def run_agentic_routine(tools, url, api_key, http_client=None):
                           .values(finished_at=_now(), status=status, report=report[:4000],
                                   log=json.dumps(log, ensure_ascii=False)[:20000]))
         except Exception as e:
+            print(f"[AGENTIC DEBUG] Error fatal: {str(e)}", flush=True)
             with tools.engine.begin() as c:
                 c.execute(update(agent_runs).where(agent_runs.c.run_id == run_id)
                           .values(finished_at=_now(), status="error", report=str(e)[:4000]))
