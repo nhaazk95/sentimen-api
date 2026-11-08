@@ -398,7 +398,14 @@ def test_email_dummy(x_agent_token: str = Header(default=None)):
             print(f"[DEBUG] Groq Error: {resp.text}", flush=True)
             return {"status": "error_groq", "detail": resp.text}
             
-        data = json.loads(resp.json()["choices"][0]["message"]["content"])
+                # --- PERBAIKAN: Menangani jika Groq mengembalikan List ---
+        raw_content = resp.json()["choices"][0]["message"]["content"]
+        data = json.loads(raw_content)
+        
+        # Jika Groq mengembalikan list (array), ambil elemen pertamanya
+        if isinstance(data, list):
+            data = data[0]
+            
         print(f"[DEBUG] Sukses dari Groq: {data}", flush=True)
         
         # 4. Kirim email menggunakan hasil dari Groq
