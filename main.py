@@ -297,16 +297,18 @@ def _need_token(tok):
 
 
 async def _run_dan_muat_ulang():
-    # Panggil versi Agentic penuh
-    await run_agentic_routine(OPS, GROQ_URL, GROQ_API_KEY)
+    print("[BACKGROUND] Memulai rutinitas agentic...", flush=True)
+    try:
+        # Panggil versi Agentic penuh
+        await run_agentic_routine(OPS, GROQ_URL, GROQ_API_KEY)
+        print("[BACKGROUND] Rutinitas agentic selesai.", flush=True)
+    except Exception as e:
+        print(f"[BACKGROUND ERROR] Gagal menjalankan agentic: {e}", flush=True)
+        
     try:
         await asyncio.to_thread(reload_rs_info)
     except Exception as e:
         print(f"[rs] muat ulang info gagal: {e}", flush=True)
-try:
-    reload_rs_info()
-except Exception as e:
-    print(f"[rs] gagal memuat info dari database: {e}", flush=True)
 
 
 @app.get("/rs/profil")
