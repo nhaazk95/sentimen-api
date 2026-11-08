@@ -298,7 +298,7 @@ def _potong(text, n=700):
 
 
 # ------------------------------------------------------------------ email negatif harian
-def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs=None):
+def _susun_email(rows, urgensi="RENDAH", detail_rs=None):
     esc = _html.escape
     by = defaultdict(list)
     for r in sorted(rows, key=lambda r: str(r.published_at or ""), reverse=True):
@@ -307,30 +307,31 @@ def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs
     now = _wib()
     waktu = f"{now.day} {BULAN[now.month - 1]} {now.year}, {now.hour:02d}.{now.minute:02d} WIB"
     
-    # Kamus untuk mencari ringkasan per RS
-    map_ringkasan = {d["rs"]: d["ringkasan"] for d in (detail_rs or [])}
+    # 1. Buat kamus pemetaan untuk Ringkasan dan Rekomendasi dari AI
+    map_ringkasan = {d.get("rs"): d.get("ringkasan", "") for d in (detail_rs or [])}
+    map_rekomendasi = {d.get("rs"): d.get("rekomendasi", "") for d in (detail_rs or [])}
     
     warna_header = "#dc2626" if urgensi == "TINGGI" else ("#f59e0b" if urgensi == "SEDANG" else "#1e3a8a")
     label_urgensi = f"🚨 PRIORITAS {urgensi} 🚨" if urgensi == "TINGGI" else f"PRIORITAS {urgensi}"
     subject = f"[{urgensi}] {n} Ulasan Negatif Baru - {k} RS"
 
-    # ... (SUSUNAN TEKS BIASA biarkan sama seperti sebelumnya) ...
+    # 2. Susunan Teks Biasa (Plain text)
     t = [f"ULASAN NEGATIF BARU ({urgensi})", waktu, f"{n} ulasan negatif di {k} rumah sakit", ""]
-    if rekomendasi:
-        t += ["REKOMENDASI UMUM", rekomendasi, ""]
-        
     for rs, items in by.items():
         t.append(f"== {rs} ({len(items)} ulasan) ==")
         rsk = map_ringkasan.get(rs, "")
-        if rsk:
-            t.append(f"Ringkasan: {rsk}")
+        rek = map_rekomendasi.get(rs, "")
+        
+        if rsk: t.append(f"Ringkasan: {rsk}")
+        if rek: t.append(f"Rekomendasi: {rek}")
+            
         for r in items:
             t += [f"[{_bintang(r.rating)[1]}] {_tgl(r.published_at)}", _potong(r.text), ""]
             
     t.append("Catatan: Sistem ini menggunakan Agentic AI. Prediksi sentimen dibuat otomatis oleh model SVM.")
     teks = "\n".join(t)
 
-    # ... (SUSUNAN HTML) ...
+    # 3. Susunan HTML
     def kartu(r):
         bintang, skor = _bintang(r.rating)
         isi = esc(_potong(r.text)).replace("\n", "<br>")
@@ -347,31 +348,39 @@ def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs
     bagian = []
     for rs, items in by.items():
         rsk = map_ringkasan.get(rs, "")
-        kotak_ringkasan = ""
-        if rsk:
-            kotak_ringkasan = (
-                '<div style="background:#fffbeb;border-left:3px solid #f59e0b;padding:10px 14px;margin:10px 0;border-radius:4px;">'
-                f'<div style="font-size:12px;font-weight:700;color:#92400e;">RINGKASAN {rs.upper()}</div>'
-                f'<div style="font-size:13px;color:#78350f;margin-top:4px;">{esc(rsk)}</div>'
-                '</div>'
+        rek = map_rekomendasi.get(rs, "")
+        
+        # Tabel Bersarang 50:50 untuk Ringkasan & Rekomendasi
+        tabel_ai = ""
+        if rsk or rek:
+            tabel_ai = (
+                '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:12px 0;">'
+                '<tr>'
+                # Kolom Kiri: Ringkasan
+                '<td width="48%" valign="top" style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:10px 12px;">'
+                '<div style="font-size:11px;font-weight:700;color:#92400e;letter-spacing:.5px;">🟨 RINGKASAN KELUHAN</div>'
+                f'<div style="font-size:12px;line-height:1.5;color:#78350f;margin-top:4px;">{esc(rsk)}</div>'
+                '</td>'
+                # Jarak antar kolom
+                '<td width="4%"></td>'
+                # Kolom Kanan: Rekomendasi
+                '<td width="48%" valign="top" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px 12px;">'
+                '<div style="font-size:11px;font-weight:700;color:#1e40af;letter-spacing:.5px;">🟦 REKOMENDASI TINDAKAN</div>'
+                f'<div style="font-size:12px;line-height:1.5;color:#1e3a8a;margin-top:4px;">{esc(rek)}</div>'
+                '</td>'
+                '</tr>'
+                '</table>'
             )
-            
+
         bagian.append(
             '<tr><td style="padding:20px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
-            f'<div style="font-size:16px;font-weight:700;color:#111827;">{esc(rs)}</div>'
-            f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{len(items)} ulasan negatif</div>'
-            f'{kotak_ringkasan}</td></tr>'
+            f'<div style="font-size:16px;font-weight:700;color:#111827;border-bottom:2px solid #e5e7eb;padding-bottom:6px;">{esc(rs)}</div>'
+            f'<div style="font-size:12px;color:#6b7280;margin-top:4px;">{len(items)} ulasan negatif</div>'
+            f'{tabel_ai}'
+            '</td></tr>'
             f'<tr><td style="padding:2px 28px 0 28px;">{"".join(kartu(r) for r in items)}</td></tr>')
-            
-    box_rekomendasi = ""
-    if rekomendasi:
-        box_rekomendasi = ('<tr><td style="padding:16px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
-                           '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 14px;">'
-                           '<div style="font-size:12px;font-weight:700;color:#1e40af;letter-spacing:.5px;">REKOMENDASI UMUM MANAJEMEN</div>'
-                           f'<div style="font-size:14px;line-height:1.6;color:#1e3a8a;margin-top:4px;">{esc(rekomendasi)}</div>'
-                           '</div></td></tr>')
 
-    link = ""
+    # 4. Rangkai HTML
     html = (
         '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
@@ -387,12 +396,13 @@ def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs
         '<tr><td style="padding:18px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
         f'<span style="font-size:30px;font-weight:700;color:#dc2626;">{n}</span>'
         f'<span style="font-size:14px;color:#374151;"> ulasan negatif di {k} rumah sakit</span></td></tr>'
-        + box_rekomendasi + "".join(bagian) +
+        + "".join(bagian) +  # <--- LANGSUNG MASUK KE BAGIAN PER-RS
         '<tr><td style="padding:22px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;">'
         '<div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;line-height:1.6;color:#6b7280;">'
         'Sistem ini menggunakan Agentic AI. Mohon periksa ulasan.'
         '</div></td></tr>'
         '</table></td></tr></table></body></html>')
+    
     return subject, teks, html
 
 
