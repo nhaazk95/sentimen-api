@@ -320,6 +320,20 @@ def rs_terdekat(daerah: str = "", lat: Optional[float] = None,
                    "jumlah_ulasan": h["n"]} for d, h in ranked],
     }
 
+@app.post("/agent/test-email-dummy")
+def test_email_dummy(x_agent_token: str = Header(default=None)):
+    _need_token(x_agent_token)
+    try:
+        res_label = OPS.label_ulasan(batas=100)
+        print("[dummy] Hasil label:", res_label, flush=True)
+    except Exception as e:
+        print("Gagal melabeli:", e, flush=True)
+    try:
+        ringkasan = "Ini adalah email uji coba (dummy) dari sistem Geosentimen."
+        res = OPS.kirim_email_negatif(ringkasan=ringkasan)
+        return {"status": "selesai", "hasil_email": res}
+    except Exception as e:
+        return {"status": "gagal", "error": str(e)}
 
 # ============================================================
 # Ops agent
