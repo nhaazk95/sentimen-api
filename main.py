@@ -22,18 +22,23 @@ from sqlalchemy import select
 
 from model_baru import bersihkan, muat_model_baru
 from ops_agent import (OpsTools, make_engine, init_db, load_active_model,
-                       export_reviews, run_routine, ops_running, agent_runs,
+                       export_reviews, run_agentic_routine, ops_running, agent_runs,
                        last_run_info, _susun_email,
                        reviews as REVIEWS_TBL, rs_info)
 
-# Konfigurasi Groq untuk LLM ringkasan email
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_KEY = os.environ.get("GROQ_API_KEY", "")
-BASE_PAYLOAD = {
-    "model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
-    "temperature": 0.2,
-    "max_tokens": 1500
-}
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+
+# Pastikan nama model ini yang dipakai (karena llama-3.3-70b-versatile sudah dimatikan Groq)
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
+def _ops_payload():
+    base = {"model": GROQ_MODEL, "temperature": 0.2, "max_tokens": 1500}
+    # Reasoning effort untuk model OpenAI GPT-OSS di Groq
+    effort = os.environ.get("OPS_REASONING_EFFORT", "low")
+    if effort:
+        base["reasoning_effort"] = effort
+    return base
 
 # 1. Inisialisasi Model & Metrics (menggunakan adapter model baru)
 pipeline, label_encoder, _metrics = muat_model_baru("model_terbaik1.pkl", "metrics.json")
@@ -264,15 +269,40 @@ def reload_rs_info():
         print(f"[rs] info RS tidak dimuat: {e}", flush=True)
         INFO = {}
 
+def _deploy_model(pipe, le, metrics):
+    global pipeline, label_encoder, ACCURACY, PRECISION_MACRO, RECALL_MACRO, \
+        F1_MACRO, CV_F1_MACRO
+    pipeline, label_encoder = pipe, le
+    ACCURACY, PRECISION_MACRO = metrics["accuracy"], metrics["precision_macro"]
+    RECALL_MACRO, F1_MACRO, CV_F1_MACRO = metrics["recall_macro"], metrics["f1_macro"], \
+        metrics["cv_f1_macro"]
+
+
+def _current_model():
+    return pipeline, label_encoder, {"accuracy": ACCURACY,
+                                     "precision_macro": PRECISION_MACRO,
+                                     "recall_macro": RECALL_MACRO,
+                                     "f1_macro": F1_MACRO,
+                                     "cv_f1_macro": CV_F1_MACRO}
+
+
+OPS = OpsTools(ENGINE, preprocess, _current_model, _deploy_model)
+
+AGENT_RUN_TOKEN = os.environ.get("AGENT_RUN_TOKEN")
+
+def _need_token(tok):
+    if not AGENT_RUN_TOKEN or not hmac.compare_digest(
+            (tok or "").encode(), AGENT_RUN_TOKEN.encode()):
+        raise HTTPException(status_code=401, detail="token salah")
+
 
 async def _run_dan_muat_ulang():
-    # Panggil run_routine dengan argumen lengkap
-    await run_routine(OPS, GROQ_URL, GROQ_KEY, BASE_PAYLOAD)
+    # Panggil versi Agentic penuh
+    await run_agentic_routine(OPS, GROQ_URL, GROQ_API_KEY)
     try:
         await asyncio.to_thread(reload_rs_info)
     except Exception as e:
         print(f"[rs] muat ulang info gagal: {e}", flush=True)
-
 try:
     reload_rs_info()
 except Exception as e:
@@ -338,34 +368,6 @@ def test_email_dummy(x_agent_token: str = Header(default=None)):
 # ============================================================
 # Ops agent
 # ============================================================
-def _deploy_model(pipe, le, metrics):
-    global pipeline, label_encoder, ACCURACY, PRECISION_MACRO, RECALL_MACRO, \
-        F1_MACRO, CV_F1_MACRO
-    pipeline, label_encoder = pipe, le
-    ACCURACY, PRECISION_MACRO = metrics["accuracy"], metrics["precision_macro"]
-    RECALL_MACRO, F1_MACRO, CV_F1_MACRO = metrics["recall_macro"], metrics["f1_macro"], \
-        metrics["cv_f1_macro"]
-
-
-def _current_model():
-    return pipeline, label_encoder, {"accuracy": ACCURACY,
-                                     "precision_macro": PRECISION_MACRO,
-                                     "recall_macro": RECALL_MACRO,
-                                     "f1_macro": F1_MACRO,
-                                     "cv_f1_macro": CV_F1_MACRO}
-
-
-OPS = OpsTools(ENGINE, preprocess, _current_model, _deploy_model)
-
-AGENT_RUN_TOKEN = os.environ.get("AGENT_RUN_TOKEN")
-
-
-def _need_token(tok):
-    if not AGENT_RUN_TOKEN or not hmac.compare_digest(
-            (tok or "").encode(), AGENT_RUN_TOKEN.encode()):
-        raise HTTPException(status_code=401, detail="token salah")
-
-
 _retrain = {"berjalan": False, "hasil": None}
 
 
@@ -377,13 +379,13 @@ def _retrain_job():
 
 
 @app.post("/agent/run", status_code=202)
-async def agent_run(background: BackgroundTasks,
-                    x_agent_token: str = Header(default=None)):
+async def agent_run(background: BackgroundTasks, x_agent_token: str = Header(default=None)):
     _need_token(x_agent_token)
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
     if ops_running():
-        raise HTTPException(status_code=409, detail="rutinitas sedang berjalan")
-    if _retrain["berjalan"]:
-        raise HTTPException(status_code=409, detail="retrain sedang berjalan")
+        raise HTTPException(status_code=409, detail="agen sedang berjalan")
+    # Panggil tanpa argumen
     background.add_task(_run_dan_muat_ulang)
     return {"status": "dimulai"}
 
@@ -518,6 +520,8 @@ _last_refresh = 0.0
 @app.post("/refresh")
 async def refresh(background: BackgroundTasks):
     global _last_refresh
+    if not GROQ_API_KEY:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY belum diset di server")
     if ops_running():
         raise HTTPException(status_code=409,
                             detail="Update sedang berjalan. Tunggu beberapa menit.")
@@ -527,7 +531,8 @@ async def refresh(background: BackgroundTasks):
                             detail=f"Update baru saja dijalankan. Coba lagi sekitar "
                                    f"{int(sisa // 60) + 1} menit lagi.")
     _last_refresh = time.time()
-    background.add_task(_run_dan_muat_ulang)
+    # Memanggil fungsi tanpa argumen karena argumen sudah diurus di dalam fungsi
+    background.add_task(_run_dan_muat_ulang) 
     return {"status": "dimulai"}
 
 

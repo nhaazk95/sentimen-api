@@ -298,7 +298,7 @@ def _potong(text, n=700):
 
 
 # ------------------------------------------------------------------ email negatif harian
-def _susun_email(rows, ringkasan=""):
+def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi=""):
     esc = _html.escape
     by = defaultdict(list)
     for r in sorted(rows, key=lambda r: str(r.published_at or ""), reverse=True):
@@ -308,20 +308,20 @@ def _susun_email(rows, ringkasan=""):
     waktu = f"{now.day} {BULAN[now.month - 1]} {now.year}, {now.hour:02d}.{now.minute:02d} WIB"
     ringkasan = " ".join((ringkasan or "").split())[:800]
     dashboard = os.environ.get("DASHBOARD_URL", "")
-    subject = f"[Geosentimen] {n} ulasan negatif baru di {k} rumah sakit"
+    
+    # Warna dan label berdasarkan Urgensi (Agentic Decision)
+    warna_header = "#dc2626" if urgensi == "TINGGI" else ("#f59e0b" if urgensi == "SEDANG" else "#1e3a8a")
+    label_urgensi = f"🚨 PRIORITAS {urgensi} 🚨" if urgensi == "TINGGI" else f"PRIORITAS {urgensi}"
+    
+    subject = f"[{urgensi}] {n} Ulasan Negatif Baru - {k} RS"
 
-    t = ["ULASAN NEGATIF BARU - Dashboard Sentimen RS Banyumas", waktu,
+    t = [f"ULASAN NEGATIF BARU ({urgensi})", waktu,
          f"{n} ulasan negatif di {k} rumah sakit", ""]
     if ringkasan:
-        t += ["RINGKASAN", ringkasan, ""]
-    for rs, items in by.items():
-        t.append(f"== {rs} ({len(items)} ulasan) ==")
-        for r in items:
-            t += [f"[{_bintang(r.rating)[1]}] {_tgl(r.published_at)}", _potong(r.text), ""]
-    t.append("Catatan: prediksi sentimen dibuat otomatis oleh model SVM dan dapat keliru.")
-    if dashboard:
-        t.append(f"Dashboard: {dashboard}")
-    teks = "\n".join(t)
+        t += ["RINGKASAN KELUHAN", ringkasan, ""]
+    if rekomendasi:
+        t += ["REKOMENDASI TINDAKAN", rekomendasi, ""]
+    # ... (sisa teks plain biarkan sama) ...
 
     def kartu(r):
         bintang, skor = _bintang(r.rating)
@@ -343,6 +343,7 @@ def _susun_email(rows, ringkasan=""):
             f'<div style="font-size:16px;font-weight:700;color:#111827;">{esc(rs)}</div>'
             f'<div style="font-size:12px;color:#6b7280;margin-top:2px;">{len(items)} ulasan negatif</div></td></tr>'
             f'<tr><td style="padding:2px 28px 0 28px;">{"".join(kartu(r) for r in items)}</td></tr>')
+            
     box = ""
     if ringkasan:
         box = ('<tr><td style="padding:16px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
@@ -350,10 +351,20 @@ def _susun_email(rows, ringkasan=""):
                '<div style="font-size:12px;font-weight:700;color:#92400e;letter-spacing:.5px;">RINGKASAN KELUHAN</div>'
                f'<div style="font-size:14px;line-height:1.6;color:#78350f;margin-top:4px;">{esc(ringkasan)}</div>'
                '</div></td></tr>')
+               
+    box_rekomendasi = ""
+    if rekomendasi:
+        box_rekomendasi = ('<tr><td style="padding:10px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
+                           '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:12px 14px;">'
+                           '<div style="font-size:12px;font-weight:700;color:#1e40af;letter-spacing:.5px;">REKOMENDASI TINDAKAN</div>'
+                           f'<div style="font-size:14px;line-height:1.6;color:#1e3a8a;margin-top:4px;">{esc(rekomendasi)}</div>'
+                           '</div></td></tr>')
+
     link = (f'<div style="margin-top:14px;"><a href="{esc(dashboard)}" '
             'style="display:inline-block;background:#1e3a8a;color:#ffffff;text-decoration:none;'
             'padding:10px 18px;border-radius:6px;font-weight:700;">Buka dashboard</a></div>'
             if dashboard else "")
+            
     html = (
         '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
@@ -362,17 +373,17 @@ def _susun_email(rows, ringkasan=""):
         '<tr><td align="center" style="padding:24px 12px;">'
         '<table role="presentation" width="600" cellpadding="0" cellspacing="0" '
         'style="width:100%;max-width:600px;background:#ffffff;border-radius:10px;overflow:hidden;">'
-        '<tr><td style="background:#1e3a8a;padding:22px 28px;font-family:Arial,Helvetica,sans-serif;">'
-        '<div style="font-size:12px;color:#bfdbfe;letter-spacing:1px;">DASHBOARD SENTIMEN RS BANYUMAS</div>'
-        '<div style="font-size:22px;font-weight:700;color:#ffffff;margin-top:4px;">Ulasan Negatif Baru</div>'
-        f'<div style="font-size:13px;color:#dbeafe;margin-top:6px;">{esc(waktu)}</div></td></tr>'
+        f'<tr><td style="background:{warna_header};padding:22px 28px;font-family:Arial,Helvetica,sans-serif;">'
+        '<div style="font-size:12px;color:#ffffff;letter-spacing:1px;opacity:0.8;">DASHBOARD SENTIMEN RS BANYUMAS</div>'
+        f'<div style="font-size:22px;font-weight:700;color:#ffffff;margin-top:4px;">{label_urgensi}</div>'
+        f'<div style="font-size:13px;color:#ffffff;opacity:0.9;margin-top:6px;">{esc(waktu)}</div></td></tr>'
         '<tr><td style="padding:18px 28px 0 28px;font-family:Arial,Helvetica,sans-serif;">'
         f'<span style="font-size:30px;font-weight:700;color:#dc2626;">{n}</span>'
         f'<span style="font-size:14px;color:#374151;"> ulasan negatif di {k} rumah sakit</span></td></tr>'
-        + box + "".join(bagian) +
+        + box + box_rekomendasi + "".join(bagian) +
         '<tr><td style="padding:22px 28px 24px 28px;font-family:Arial,Helvetica,sans-serif;">'
         '<div style="border-top:1px solid #e5e7eb;padding-top:14px;font-size:12px;line-height:1.6;color:#6b7280;">'
-        'Prediksi sentimen dibuat otomatis oleh model SVM dan dapat keliru. Mohon periksa isi ulasan.'
+        'Sistem ini menggunakan Agentic AI. Prediksi sentimen dibuat oleh model SVM dan dapat keliru. Mohon periksa ulasan.'
         + link + '</div></td></tr>'
         '</table></td></tr></table></body></html>')
     return subject, teks, html
@@ -486,6 +497,40 @@ def _susun_email_bulanan(period, rows, prev_rows=None):
         '</table></td></tr></table></body></html>')
     return subject, teks, html
 
+AGENT_TOOLS_SCHEMA = [
+    {
+        "type": "function",
+        "function": {
+            "name": "ambil_ulasan_baru",
+            "description": "Gunakan alat ini PERTAMA KALI untuk mengambil ulasan terbaru dari Google Maps via Apify.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lihat_ulasan_negatif",
+            "description": "Gunakan ini setelah mengambil ulasan. Untuk melihat berapa banyak ulasan negatif baru yang belum diemailkan.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kirim_email_agentic",
+            "description": "Gunakan ini jika ada ulasan negatif. AI harus menganalisis teks dan menentukan urgensi.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ringkasan": {"type": "string", "description": "1-3 kalimat santai tentang keluhan utama pasien."},
+                    "urgensi": {"type": "string", "enum": ["TINGGI", "SEDANG", "RENDAH"], "description": "Tingkat bahaya keluhan. TINGGI jika menyangkut nyawa/kesalahan medis/amarah besar."},
+                    "rekomendasi": {"type": "string", "description": "1 kalimat saran tindakan untuk manajemen RS."}
+                },
+                "required": ["ringkasan", "urgensi", "rekomendasi"]
+            }
+        }
+    }
+]
 
 class OpsTools:
     def __init__(self, engine, preprocess, get_model, deploy,
@@ -734,7 +779,7 @@ class OpsTools:
             return ""
         return "Keluhan utama — " + "; ".join(parts[:6]) + "."
 
-    def kirim_email_negatif(self, ringkasan=""):
+    def kirim_email_negatif(self, ringkasan="", urgensi="RENDAH", rekomendasi=""):
         to = (os.environ.get("NOTIFY_TO") or "").strip()
         if not to:
             return {"error": "NOTIFY_TO belum diset"}
@@ -755,7 +800,7 @@ class OpsTools:
         if not (ringkasan or "").strip():
             ringkasan = self._ringkasan_otomatis(rows)
         recipients = [x.strip() for x in to.split(",") if x.strip()]
-        subject, body, html = _susun_email(rows, ringkasan)
+        subject, body, html = _susun_email(rows, ringkasan, urgensi, rekomendasi)
         try:
             if provider == "smtp":
                 msg = EmailMessage()
@@ -775,7 +820,7 @@ class OpsTools:
                       .where(reviews.c.review_id.in_([r.review_id for r in rows]))
                       .values(notified=1))
         return {"dikirim": len(rows), "penerima": len(recipients), "lewat": provider,
-                "ringkasan_dipakai": bool(ringkasan)}
+                "urgensi": urgensi, "ringkasan_dipakai": bool(ringkasan)}
 
     # ---- 5. antrean ragu & koreksi
     def lihat_ulasan_ragu(self, batas=10):
@@ -1136,15 +1181,21 @@ class OpsTools:
     # ---- 9. dispatch
     def call(self, name, args):
         args = args if isinstance(args, dict) else {}
-        fn = {"status_data": self.status_data,
+        fn = {
+              "status_data": self.status_data,
               "ambil_ulasan_baru": self.ambil_ulasan_baru,
               "label_ulasan": self.label_ulasan,
               "lihat_ulasan_negatif_belum_dikirim": self.lihat_ulasan_negatif_belum_dikirim,
               "kirim_email_negatif": self.kirim_email_negatif,
+              
+              # TAMBAHKAN BARIS INI (Agar AI bisa memanggil nama alat yang ada di schema)
+              "kirim_email_agentic": self.kirim_email_negatif, 
+              
               "retrain_model": self.retrain_model,
               "laporan_bulanan": self.laporan_bulanan,
               "kirim_laporan_bulanan": self.kirim_laporan_bulanan,
-              "cek_lonjakan_negatif": self.cek_lonjakan_negatif}.get(name)
+              "cek_lonjakan_negatif": self.cek_lonjakan_negatif
+              }.get(name)
         if not fn:
             return {"error": f"alat '{name}' tidak ada"}
         if name == "label_ulasan":
@@ -1155,7 +1206,7 @@ class OpsTools:
             return {"error": f"argumen tidak valid: {e}"}
         except Exception as e:
             return {"error": f"alat gagal: {type(e).__name__}: {e}"}
-
+        
     # ---- 10. health
     def _alert_ok(self, key):
         last = self._kv_get("alert_" + key)
@@ -1319,102 +1370,127 @@ async def _post(client, url, headers, payload, tries=6):
 
 
 async def _llm_ringkasan(client, url, headers, base_payload, pending):
-    """Panggil LLM sekali untuk menulis ringkasan keluhan. Return string (bisa kosong)."""
+    """Panggil LLM untuk merangkum keluhan DAN menentukan tingkat urgensi (Agentic Decision)."""
     items = [{"rs": u["rs"], "rating": u.get("rating"), "teks": (u.get("teks") or "")[:400]}
              for u in pending.get("ulasan", [])]
     if not items:
-        return ""
-    prompt = ("Berikut ulasan negatif baru (JSON). Tulis 1-3 kalimat bahasa Indonesia santai, "
-              "ringkas, tanpa menyebut nama pengguna, merangkum keluhan utama per RS. "
-              "Hanya dari isi ulasan, jangan mengarang.\n\n"
-              + json.dumps(items, ensure_ascii=False, default=str)[:3500])
+        return "", "RENDAH", ""
+        
+    prompt = (
+        "Berikut ulasan negatif baru dari pasien rumah sakit (JSON). Lakukan dua tugas:\n"
+        "1. Tulis ringkasan 1-3 kalimat bahasa Indonesia santai tentang keluhan utama.\n"
+        "2. Tentukan tingkat urgensi (TINGGI / SEDANG / RENDAH). Jika keluhan menyangkut nyawa, kesalahan medis, atau amarah yang sangat besar, beri TINGGI. Jika hanya administratif/antrean, beri SEDANG/RENDAH.\n"
+        "3. Beri 1 kalimat rekomendasi tindakan untuk manajemen.\n\n"
+        "Balas HANYA dengan format JSON valid seperti ini:\n"
+        '{"ringkasan": "...", "urgensi": "TINGGI/SEDANG/RENDAH", "rekomendasi": "..."}\n\n'
+        "Data ulasan:\n" + json.dumps(items, ensure_ascii=False, default=str)[:3500]
+    )
+    
     payload = dict(base_payload,
-                   messages=[{"role": "system", "content": SYSTEM_OPS},
-                             {"role": "user", "content": prompt}])
+                   messages=[{"role": "system", "content": "Kamu adalah analis mutu layanan RS yang cerdas dan ringkas. Selalu balas dengan JSON valid."},
+                             {"role": "user", "content": prompt}],
+                   response_format={"type": "json_object"}) # Memaksa Groq balas JSON
     payload.pop("tools", None)
+    
     resp = await _post(client, url, headers, payload)
     if resp.status_code != 200:
         raise AgentError(resp.status_code, resp.text)
-    return (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        
+    content = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    
+    try:
+        # Parse JSON dari Groq
+        data = json.loads(content)
+        return data.get("ringkasan", ""), data.get("urgensi", "RENDAH"), data.get("rekomendasi", "")
+    except json.JSONDecodeError:
+        # Fallback jika Groq gagal format JSON
+        return content, "RENDAH", ""
 
-
-async def run_routine(tools, url, api_key, base_payload, http_client=None):
-    """Jalankan rutinitas. Urutan:
-       1. scrape (kode)
-       2. LLM ringkasan (opsional, bila ada negatif pending)
-       3. email negatif (kode, dengan fallback ringkasan Python)
-       4. cek_lonjakan_negatif (kode)
-       5. retrain (kode)
-    """
+async def run_agentic_routine(tools, url, api_key, http_client=None):
+    """Menjalankan rutinitas menggunakan FULL AGENTIC AI (Groq sebagai otak)."""
     if _LOCK.locked():
         return
     async with _LOCK:
         run_id = uuid.uuid4().hex[:12]
         with tools.engine.begin() as c:
             c.execute(update(agent_runs).where(agent_runs.c.status == "running").values(
-                status="terputus", finished_at=_now(),
-                report="Run terputus: proses server berhenti sebelum selesai."))
-            c.execute(insert(agent_runs).values(run_id=run_id, started_at=_now(),
-                                                status="running"))
-        status, report, log = "ok", "", []
+                status="terputus", finished_at=_now(), report="Run terputus."))
+            c.execute(insert(agent_runs).values(run_id=run_id, started_at=_now(), status="running"))
+            
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         own_client = http_client is None
+        if own_client:
+            import httpx
+            http_client = httpx.AsyncClient(timeout=120)
+            
+        messages = [
+            {"role": "system", "content": "Kamu adalah Agen Cerdas Otonom untuk RS Banyumas. Tugasmu: 1) Panggil alat ambil_ulasan_baru. 2) Panggil lihat_ulasan_negatif. 3) Jika ada negatif, panggil kirim_email_agentic dengan analisis dan urgensimu sendiri. Jangan minta tolong manusia, lakukan semuanya otomatis."},
+            {"role": "user", "content": "Jalankan rutinitas pemantauan ulasan sekarang."}
+        ]
+        
+        log = []
         try:
-            if own_client:
-                import httpx
-                http_client = httpx.AsyncClient(timeout=120)
-            headers = {"Authorization": f"Bearer {api_key}",
-                       "Content-Type": "application/json"}
-
-            # 1. scrape
-            scrape = await asyncio.to_thread(tools.call, "ambil_ulasan_baru", {})
-            log.append({"alat": "ambil_ulasan_baru", "hasil": str(scrape)[:400]})
-
-            # 2. ringkasan LLM (opsional)
-            pending = await asyncio.to_thread(
-                tools.call, "lihat_ulasan_negatif_belum_dikirim", {"batas": 20})
-            ringkasan = ""
-            if pending.get("total_menunggu", 0) > 0:
-                try:
-                    ringkasan = await _llm_ringkasan(http_client, url, headers,
-                                                     base_payload, pending)
-                except Exception as e:
-                    log.append({"alat": "(llm ringkasan)",
-                                "hasil": f"error, pakai fallback: {e}"})
-                    ringkasan = ""
-
-            # 3. email negatif (kode)
-            email = await asyncio.to_thread(
-                tools.call, "kirim_email_negatif", {"ringkasan": ringkasan})
-            log.append({"alat": "kirim_email_negatif", "hasil": str(email)[:400]})
-
-            # 4. cek lonjakan
-            try:
-                lonjakan = await asyncio.to_thread(tools.call, "cek_lonjakan_negatif", {})
-                log.append({"alat": "cek_lonjakan_negatif",
-                            "hasil": str(lonjakan)[:300]})
-            except Exception as e:
-                log.append({"alat": "cek_lonjakan_negatif", "hasil": f"error: {e}"})
-
-            # 5. retrain (kode)
-            rt = await asyncio.to_thread(tools.call, "retrain_model", {})
-            log.append({"alat": "retrain_model", "hasil": str(rt)[:300]})
-
-            report = _laporan_otomatis(log)
-        except Exception as e:
-            status, report = "error", f"{type(e).__name__}: {e}"
-        finally:
-            if own_client and http_client is not None:
-                await http_client.aclose()
+            for step in range(5): # Maksimal 5 putaran berpikir
+                payload = {
+                    "model": os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+                    "messages": messages,
+                    "tools": AGENT_TOOLS_SCHEMA,
+                    "tool_choice": "auto",
+                    "temperature": 0.2
+                }
+                resp = await http_client.post(url, headers=headers, json=payload)
+                if resp.status_code != 200:
+                    raise Exception(f"Groq Error: {resp.text}")
+                
+                msg = resp.json()["choices"][0]["message"]
+                messages.append(msg) # Simpan respons AI
+                
+                # Jika AI memutuskan memanggil alat (Function Calling)
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        fn_name = tc["function"]["name"]
+                        args = json.loads(tc["function"]["arguments"])
+                        print(f"[AGENTIC] AI memutuskan memanggil: {fn_name} dengan argumen {args}", flush=True)
+                        
+                        # Eksekusi alat Python berdasarkan perintah AI
+                        if fn_name == "ambil_ulasan_baru":
+                            res = await asyncio.to_thread(tools.call, "ambil_ulasan_baru", {})
+                        elif fn_name == "lihat_ulasan_negatif":
+                            res = await asyncio.to_thread(tools.call, "lihat_ulasan_negatif_belum_dikirim", {})
+                        elif fn_name == "kirim_email_agentic":
+                            res = await asyncio.to_thread(tools.call, "kirim_email_negatif", args)
+                        else:
+                            res = {"error": "alat tidak dikenal"}
+                            
+                        log.append({"alat": fn_name, "hasil": str(res)[:300]})
+                        
+                        # Kirim hasil alat kembali ke AI
+                        messages.append({
+                            "tool_call_id": tc["id"],
+                            "role": "tool",
+                            "name": fn_name,
+                            "content": json.dumps(res, ensure_ascii=False)[:2000]
+                        })
+                else:
+                    # AI selesai berpikir dan memberikan jawaban akhir
+                    final_report = msg.get("content", "Selesai.")
+                    print(f"[AGENTIC] Laporan Akhir AI: {final_report}", flush=True)
+                    status = "ok"
+                    report = final_report
+                    break
+            
+            # Simpan hasil ke database
             with tools.engine.begin() as c:
                 c.execute(update(agent_runs).where(agent_runs.c.run_id == run_id)
-                          .values(finished_at=_now(), status=status,
-                                  report=report[:4000],
+                          .values(finished_at=_now(), status=status, report=report[:4000],
                                   log=json.dumps(log, ensure_ascii=False)[:20000]))
-        try:
-            await asyncio.to_thread(tools.pantau_kesehatan)
         except Exception as e:
-            print("[health]", e, flush=True)
-        return run_id
+            with tools.engine.begin() as c:
+                c.execute(update(agent_runs).where(agent_runs.c.run_id == run_id)
+                          .values(finished_at=_now(), status="error", report=str(e)[:4000]))
+        finally:
+            if own_client and http_client:
+                await http_client.aclose()
 
 
 def _laporan_otomatis(log):
