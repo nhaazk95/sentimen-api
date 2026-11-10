@@ -298,7 +298,7 @@ def _potong(text, n=700):
 
 
 # ------------------------------------------------------------------ email negatif harian
-def _susun_email(rows, urgensi="RENDAH", detail_rs=None):
+def _susun_email(rows, ringkasan="", urgensi="RENDAH", rekomendasi="", detail_rs=None):    
     esc = _html.escape
     by = defaultdict(list)
     for r in sorted(rows, key=lambda r: str(r.published_at or ""), reverse=True):
@@ -534,15 +534,26 @@ AGENT_TOOLS_SCHEMA = [
         "type": "function",
         "function": {
             "name": "kirim_email_agentic",
-            "description": "Gunakan ini jika ada ulasan negatif. AI harus menganalisis teks dan menentukan urgensi.",
+            "description": "Gunakan ini jika ada ulasan negatif. AI harus menganalisis teks, menentukan urgensi, dan membuat ringkasan & rekomendasi SPESIFIK untuk MASING-MASING RS.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "ringkasan": {"type": "string", "description": "1-3 kalimat santai tentang keluhan utama pasien."},
-                    "urgensi": {"type": "string", "enum": ["TINGGI", "SEDANG", "RENDAH"], "description": "Tingkat bahaya keluhan. TINGGI jika menyangkut nyawa/kesalahan medis/amarah besar."},
-                    "rekomendasi": {"type": "string", "description": "1 kalimat saran tindakan untuk manajemen RS."}
+                    "urgensi": {"type": "string", "enum": ["TINGGI", "SEDANG", "RENDAH"], "description": "Tingkat bahaya keluhan secara keseluruhan."},
+                    "detail_rs": {
+                        "type": "array",
+                        "description": "Daftar ringkasan dan rekomendasi untuk setiap RS.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "rs": {"type": "string", "description": "Nama RS persis seperti di data."},
+                                "ringkasan": {"type": "string", "description": "1-3 kalimat ringkasan keluhan khusus RS ini."},
+                                "rekomendasi": {"type": "string", "description": "1 kalimat rekomendasi tindakan khusus RS ini."}
+                            },
+                            "required": ["rs", "ringkasan", "rekomendasi"]
+                        }
+                    }
                 },
-                "required": ["ringkasan", "urgensi", "rekomendasi"]
+                "required": ["urgensi", "detail_rs"]
             }
         }
     }
@@ -816,7 +827,13 @@ class OpsTools:
         if not (ringkasan or "").strip():
             ringkasan = self._ringkasan_otomatis(rows)
         recipients = [x.strip() for x in to.split(",") if x.strip()]
-        subject, body, html = _susun_email(rows, ringkasan, urgensi, rekomendasi, detail_rs)
+        subject, body, html = _susun_email(
+            rows, 
+            ringkasan=ringkasan, 
+            urgensi=urgensi, 
+            rekomendasi=rekomendasi, 
+            detail_rs=detail_rs
+        )
         try:
             if provider == "smtp":
                 msg = EmailMessage()
@@ -1360,7 +1377,7 @@ async def run_agentic_routine(tools, url, api_key, http_client=None):
             http_client = httpx.AsyncClient(timeout=120)
             
         messages = [
-            {"role": "system", "content": "Kamu adalah Agen Cerdas Otonom untuk RS Banyumas. Tugasmu: 1) Panggil alat ambil_ulasan_baru. 2) Panggil lihat_ulasan_negatif. 3) Jika ada negatif, panggil kirim_email_agentic dengan analisis dan urgensimu sendiri. Jangan minta tolong manusia, lakukan semuanya otomatis."},
+            {"role": "system", "content": "Kamu adalah Agen Cerdas Otonom untuk RS Banyumas. Tugasmu: 1) Panggil alat ambil_ulasan_baru. 2) Panggil lihat_ulasan_negatif. 3) Jika ada negatif, panggil kirim_email_agentic. Kamu WAJIB mengisi 'detail_rs' berisi array/list yang memuat ringkasan dan rekomendasi untuk MASING-MASING nama RS yang ada di data ulasan negatif. Tentukan juga urgensi keseluruhan (TINGGI/SEDANG/RENDAH). Jangan minta tolong manusia, lakukan semuanya otomatis."},
             {"role": "user", "content": "Jalankan rutinitas pemantauan ulasan sekarang."}
         ]
         
